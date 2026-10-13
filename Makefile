@@ -4,7 +4,7 @@ AR   ?= ar
 LD   ?= ld
 OBJCOPY ?= objcopy
 
-MODS := util json net gateway core rest
+MODS := util json net gateway core rest helpers interact
 OBJS := $(addprefix build/,$(addsuffix .o,$(MODS)))
 LIBS := -l:libcurl.so.4 -pthread
 
@@ -30,7 +30,10 @@ build/test_caineasm: tests/test_caineasm.c build/libcaineasm.a include/caineasm.
 build/ping_bot: examples/ping_bot.c build/libcaineasm.a include/caineasm.h
 	$(CC) -O1 -Wall -Wextra -Iinclude -o $@ examples/ping_bot.c build/libcaineasm.a $(LIBS)
 
-example: build/ping_bot
+build/slash_bot: examples/slash_bot.c build/libcaineasm.a include/caineasm.h
+	$(CC) -O1 -Wall -Wextra -Iinclude -o $@ examples/slash_bot.c build/libcaineasm.a $(LIBS)
+
+example: build/ping_bot build/slash_bot
 
 # end-to-end test against a local TLS mock of Discord (tests/mock_discord.py)
 test: build/test_caineasm

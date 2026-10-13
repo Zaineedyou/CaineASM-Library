@@ -1,0 +1,3 @@
+# Keep the repository language bar on C and Assembly
+tests/*.py linguist-detectable=false
+Makefile linguist-detectable=false

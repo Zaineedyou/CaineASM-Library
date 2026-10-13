@@ -19,6 +19,7 @@ alignb 8
 global g_discord_token, g_gateway_url, g_api_base, g_user_agent
 global g_bot_id, g_stop, g_intents, g_quiet
 global g_cb_event, g_cb_event_user, g_cb_msg, g_cb_msg_user
+global g_app_id, g_cb_inter, g_cb_inter_user
 g_discord_token: resq 1
 g_gateway_url:   resq 1
 g_api_base:      resq 1
@@ -31,6 +32,9 @@ g_cb_event:      resq 1
 g_cb_event_user: resq 1
 g_cb_msg:        resq 1
 g_cb_msg_user:   resq 1
+g_cb_inter:      resq 1
+g_cb_inter_user: resq 1
+g_app_id:        resb 32
 
 section .text
 
@@ -199,6 +203,22 @@ global casm_on_message
 casm_on_message:
     mov [rel g_cb_msg], rdi
     mov [rel g_cb_msg_user], rsi
+    ret
+
+global casm_on_interaction
+casm_on_interaction:
+    mov [rel g_cb_inter], rdi
+    mov [rel g_cb_inter_user], rsi
+    ret
+
+; const char *casm_app_id(void)   the application id, NULL before READY
+global casm_app_id
+casm_app_id:
+    lea rax, [rel g_app_id]
+    cmp byte [rax], 0
+    jne .r
+    xor eax, eax
+.r:
     ret
 
 ; ---------------------------------------------------------------------

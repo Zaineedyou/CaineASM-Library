@@ -10,6 +10,7 @@ extern sb_init, sb_free, sb_reset, sb_append, sb_appends, sb_putc, sb_append_u64
 extern json_get, json_path, json_true
 extern ws_connect, ws_close, ws_poll_message, ws_send_text, ws_send_close, ws_msg, ws_close_code
 extern g_cb_event, g_cb_event_user, g_cb_msg, g_cb_msg_user, g_intents
+extern g_app_id, g_cb_inter, g_cb_inter_user
 extern now_ms, sleep_ms, ieq, parse_u64, c_strlen, log_line, log_sb
 extern g_discord_token, g_gateway_url, g_bot_id, g_stop
 
@@ -47,6 +48,23 @@ m_attach:    db "attachments", 0
 m_ment:      db "mentions", 0
 m_refaid:    db "referenced_message.author.id", 0
 m_everyone:  db "mention_everyone", 0
+k_appid:     db "application.id", 0
+i_id:        db "id", 0
+i_app:       db "application_id", 0
+i_tok:       db "token", 0
+i_guild:     db "guild_id", 0
+i_chan:      db "channel_id", 0
+i_muid:      db "member.user.id", 0
+i_uid:       db "user.id", 0
+i_munm:      db "member.user.username", 0
+i_unm:       db "user.username", 0
+i_cname:     db "data.name", 0
+i_cid:       db "data.id", 0
+i_custom:    db "data.custom_id", 0
+i_opts:      db "data.options", 0
+i_type:      db "type", 0
+i_ctype:     db "data.type", 0
+e_inter:     db "INTERACTION_CREATE", 0
 e_ready:     db "READY", 0
 e_resumed:   db "RESUMED", 0
 e_msg:       db "MESSAGE_CREATE", 0
@@ -329,6 +347,98 @@ emit_message:
     call [rel g_cb_msg]
     LEAVE_RET
 
+; void fill_num(long *dst, const char *obj, size_t len, const char *path, jv *tmp)  0 when missing
+fill_num:
+    ENTER 0
+    mov r12, rdi
+    mov rbx, r8
+    mov qword [r12], 0
+    mov qword [rbx + JV_TYPE], 0
+    mov rdi, rsi
+    mov rsi, rdx
+    mov rdx, rcx
+    mov rcx, rbx
+    call json_path
+    test eax, eax
+    jz .d
+    cmp qword [rbx + JV_TYPE], 'd'
+    jne .d
+    mov rdi, [rbx + JV_PTR]
+    mov rsi, [rbx + JV_LEN]
+    call parse_u64
+    mov [r12], rax
+.d:
+    LEAVE_RET
+
+%define I_ID     0
+%define I_APP    16
+%define I_TOK    32
+%define I_GUILD  48
+%define I_CHAN   64
+%define I_UID    80
+%define I_UNAME  96
+%define I_CNAME  112
+%define I_CID    128
+%define I_CUSTOM 144
+%define I_OPTS   160
+%define I_RAW    176
+%define I_TYPE   192
+%define I_CTYPE  200
+%define I_TMP    208
+
+%macro IFILL 3                      ; offset, path label, json type
+    lea rdi, [rsp + %1]
+    mov rsi, r12
+    mov rdx, r13
+    lea rcx, [rel %2]
+    mov r8d, %3
+    lea r9, [rsp + I_TMP]
+    call fill_slice
+%endmacro
+
+; void emit_interaction(const char *d, size_t len)   builds casm_interaction, calls the callback
+emit_interaction:
+    ENTER 240
+    mov r12, rdi
+    mov r13, rsi
+    IFILL I_ID,     i_id,     's'
+    IFILL I_APP,    i_app,    's'
+    IFILL I_TOK,    i_tok,    's'
+    IFILL I_GUILD,  i_guild,  's'
+    IFILL I_CHAN,   i_chan,   's'
+    IFILL I_UID,    i_muid,   's'
+    cmp qword [rsp + I_UID], 0
+    jne .hasuid
+    IFILL I_UID,    i_uid,    's'
+.hasuid:
+    IFILL I_UNAME,  i_munm,   's'
+    cmp qword [rsp + I_UNAME], 0
+    jne .hasun
+    IFILL I_UNAME,  i_unm,    's'
+.hasun:
+    IFILL I_CNAME,  i_cname,  's'
+    IFILL I_CID,    i_cid,    's'
+    IFILL I_CUSTOM, i_custom, 's'
+    IFILL I_OPTS,   i_opts,   'a'
+    mov [rsp + I_RAW], r12
+    mov [rsp + I_RAW + 8], r13
+    lea rdi, [rsp + I_TYPE]
+    mov rsi, r12
+    mov rdx, r13
+    lea rcx, [rel i_type]
+    lea r8, [rsp + I_TMP]
+    call fill_num
+    lea rdi, [rsp + I_CTYPE]
+    mov rsi, r12
+    mov rdx, r13
+    lea rcx, [rel i_ctype]
+    lea r8, [rsp + I_TMP]
+    call fill_num
+    lea rdi, [rsp]
+    mov rsi, [rel g_cb_inter_user]
+    call [rel g_cb_inter]
+    LEAVE_RET
+
 ; void emit_dispatch(const char *t, size_t tlen, const char *d, size_t dlen)
 ; event callback first (every dispatch), then the parsed MESSAGE_CREATE callback
 emit_dispatch:
@@ -348,16 +458,29 @@ emit_dispatch:
     call rax
 .nev:
     cmp qword [rel g_cb_msg], 0
-    je .done
+    je .noMsg
     mov rdi, r12
     mov rsi, r13
     lea rdx, [rel e_msg]
     call ieq
     test eax, eax
-    jz .done
+    jz .noMsg
     mov rdi, r14
     mov rsi, r15
     call emit_message
+    jmp .done
+.noMsg:
+    cmp qword [rel g_cb_inter], 0
+    je .done
+    mov rdi, r12
+    mov rsi, r13
+    lea rdx, [rel e_inter]
+    call ieq
+    test eax, eax
+    jz .done
+    mov rdi, r14
+    mov rsi, r15
+    call emit_interaction
 .done:
     LEAVE_RET
 
@@ -507,6 +630,19 @@ gw_dispatch:
     lea rdx, [rsp + X_J1]
     call copy_jv
 .r4:
+    mov rdi, [rsp + X_D + JV_PTR]
+    mov rsi, [rsp + X_D + JV_LEN]
+    lea rdx, [rel k_appid]
+    lea rcx, [rsp + X_J1]
+    mov qword [rsp + X_J1 + JV_TYPE], 0
+    call json_path
+    cmp qword [rsp + X_J1 + JV_TYPE], 's'
+    jne .r4b
+    lea rdi, [rel g_app_id]
+    mov esi, 32
+    lea rdx, [rsp + X_J1]
+    call copy_jv
+.r4b:
     lea rdi, [rsp + X_SB]
     call sb_init
     lea rdi, [rsp + X_SB]

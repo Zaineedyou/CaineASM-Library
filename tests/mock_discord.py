@@ -42,8 +42,10 @@ def readframe(c):
 
 
 class Mock:
-    def __init__(self, mode='main'):
+    def __init__(self, mode='main', certdir=HERE, drop_after=0):
         self.mode = mode
+        self.drop_after = drop_after      # close a REST connection after this many requests (0 = never)
+        self.http_conns = 0
         self.log = []
         self.lock = threading.Lock()
         self.seq = 0
@@ -51,7 +53,7 @@ class Mock:
         self.rate_done = False
         self.finished = threading.Event()
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(os.path.join(HERE, 'cert.pem'), os.path.join(HERE, 'key.pem'))
+        ctx.load_cert_chain(os.path.join(certdir, 'cert.pem'), os.path.join(certdir, 'key.pem'))
         self.ctx = ctx
         self.sock = socket.socket()
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -90,6 +92,10 @@ class Mock:
 
     # ---------------- REST ----------------
     def _http(self, c, buf):
+        with self.lock:
+            self.http_conns += 1
+            conn_id = self.http_conns
+        served = 0
         while True:
             while b'\r\n\r\n' not in buf:
                 x = c.recv(65536)
@@ -105,10 +111,16 @@ class Mock:
                 rest += c.recv(65536)
             body, buf = rest[:n], rest[n:]
             status, out = 200, b'{}'
-            self.ev('rest', {'method': meth, 'path': path, 'headers': hd, 'body': body.decode('utf-8', 'replace')})
+            self.ev('rest', {'method': meth, 'path': path, 'headers': hd, 'body': body.decode('utf-8', 'replace'), 'conn': conn_id})
             if meth == 'POST' and path.endswith('/messages') and b'429TEST' in body and not self.rate_done:
                 self.rate_done = True
                 status, out = 429, b'{"message":"You are being rate limited.","retry_after":0.3,"global":false}'
+            elif meth == 'POST' and path.endswith('/callback'):
+                status, out = 204, b''
+            elif meth == 'POST' and path.startswith('/api/v10/webhooks/'):
+                out = b'{"id":"8000"}'
+            elif meth == 'PUT' and path.startswith('/api/v10/applications/'):
+                out = b'[]'
             elif meth == 'POST' and path.endswith('/messages'):
                 out = b'{"id":"5000"}'
             elif path.endswith('/typing'):
@@ -121,6 +133,10 @@ class Mock:
                 out = b'{"id":"900","username":"MockBot"}'
             c.sendall((f"HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n"
                        f"Content-Length: {len(out)}\r\n\r\n").encode() + out)
+            served += 1
+            if self.drop_after and served >= self.drop_after:
+                c.close()
+                return
 
     # ---------------- gateway ----------------
     def _send(self, c, obj):
@@ -139,6 +155,35 @@ class Mock:
         if extra:
             d.update(extra)
         return {'op': 0, 't': 'MESSAGE_CREATE', 'd': d}
+
+    def _inter(self, id, name=None, type=2, token='tok_A-b.c1', user_in='member', data=None, **kw):
+        u = {'id': 'U1', 'username': 'alice'}
+        d = {'id': id, 'application_id': '700', 'type': type, 'token': token, 'version': 1,
+             'channel_id': '1001', 'data': data if data is not None else {}}
+        if name:
+            d['data'].update({'id': 'c1', 'name': name, 'type': 1})
+        if user_in == 'member':
+            d['guild_id'] = 'G1'
+            d['member'] = {'user': u, 'nick': 'Nick'}
+        else:
+            d['user'] = {'id': 'U2', 'username': 'bob'}
+        d.update(kw)
+        return {'op': 0, 't': 'INTERACTION_CREATE', 'd': d}
+
+    def _interactions(self):
+        return [
+            self._inter('3001', 'ping', data={'options': [
+                {'name': 'text', 'type': 3, 'value': 'he said "hi" \u00e9\n'},
+                {'name': 'n', 'type': 4, 'value': 42}, {'name': 'flag', 'type': 5, 'value': True}]}),
+            self._inter('3002', 'work', token='tok_B', user_in='user'),
+            self._inter('3003', 'admin', data={'options': [{'name': 'x', 'type': 3, 'value': 'skip'},
+                {'name': 'ban', 'type': 2, 'options': [{'name': 'user', 'type': 1, 'options': [
+                    {'name': 'who', 'type': 6, 'value': 'U9'}]}]}]}),
+            self._inter('3004', type=3, token='tok_C', data={'custom_id': 'btn1', 'component_type': 2}),
+            self._inter('3005', 'bad', token='bad/tok'),
+            self._inter('3006', 'register'),
+            self._inter('3007', 'done'),
+        ]
 
     def _ws(self, c, req):
         self.conn_n += 1
@@ -182,8 +227,19 @@ class Mock:
 
         def ready(sess):
             self._send(c, {'op': 0, 't': 'READY', 'd': {
-                'v': 10, 'user': {'id': '900', 'username': 'MockBot'}, 'session_id': sess,
+                'v': 10, 'user': {'id': '900', 'username': 'MockBot'}, 'application': {'id': '700', 'flags': 0},
+                'session_id': sess,
                 'resume_gateway_url': f'wss://localhost:{self.port}'}})
+
+        if self.mode == 'inter':
+            ready('SESS1')
+            time.sleep(0.3)
+            for it in self._interactions():
+                self._send(c, it)
+                time.sleep(1.0)
+            time.sleep(1.0)
+            self.finished.set()
+            return
 
         if n == 1:
             ready('SESS1')

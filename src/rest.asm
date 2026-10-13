@@ -6,11 +6,19 @@
 ; =====================================================================
 %include "defs.inc"
 
-extern free
+%define POOL_MAX 8
+
+extern free, pthread_mutex_lock, pthread_mutex_unlock
 extern sb_init, sb_free, sb_reset, sb_append, sb_appends, sb_append_json_esc
 extern json_get, parse_u64, sleep_ms, chunk_next, trim_span
 extern http_new, http_free, http_do
 extern g_api_base, g_hdr_discord, g_user_agent
+
+section .bss
+alignb 8
+pool_mutex:    resb 40                  ; all zeros == PTHREAD_MUTEX_INITIALIZER (glibc)
+pool_n:        resq 1
+pool_h:        resq POOL_MAX
 
 section .rodata
 s_retry_after: db "retry_after", 0
@@ -157,9 +165,93 @@ rest_do:
     LEAVE_RET
 
 ; ---------------------------------------------------------------------
+; handle pool: libcurl keeps live connections inside an easy handle across
+; curl_easy_reset, so recycling handles gives keep-alive for free. A handle
+; is only ever used by one thread at a time (libcurl's rule).
+; ---------------------------------------------------------------------
+; CURL *pool_get(void)
+pool_get:
+    ENTER 0
+    lea rdi, [rel pool_mutex]
+    CALLC pthread_mutex_lock
+    mov rax, [rel pool_n]
+    test rax, rax
+    jz .none
+    dec rax
+    mov [rel pool_n], rax
+    lea rcx, [rel pool_h]
+    mov rbx, [rcx + rax*8]
+    jmp .unlock
+.none:
+    xor ebx, ebx
+.unlock:
+    lea rdi, [rel pool_mutex]
+    CALLC pthread_mutex_unlock
+    test rbx, rbx
+    jnz .ret
+    call http_new
+    mov rbx, rax
+.ret:
+    mov rax, rbx
+    LEAVE_RET
+
+; void pool_put(CURL *h)   keep it for reuse, or free it when the pool is full
+pool_put:
+    ENTER 0
+    mov rbx, rdi
+    test rbx, rbx
+    jz .d
+    lea rdi, [rel pool_mutex]
+    CALLC pthread_mutex_lock
+    mov rax, [rel pool_n]
+    cmp rax, POOL_MAX
+    jae .full
+    lea rcx, [rel pool_h]
+    mov [rcx + rax*8], rbx
+    inc rax
+    mov [rel pool_n], rax
+    xor ebx, ebx
+.full:
+    lea rdi, [rel pool_mutex]
+    CALLC pthread_mutex_unlock
+    test rbx, rbx
+    jz .d
+    mov rdi, rbx
+    call http_free
+.d:
+    LEAVE_RET
+
+; void casm_cleanup(void)   frees the pooled handles (call after casm_run returned)
+global casm_cleanup
+casm_cleanup:
+    ENTER 0
+.l:
+    lea rdi, [rel pool_mutex]
+    CALLC pthread_mutex_lock
+    xor ebx, ebx
+    mov rax, [rel pool_n]
+    test rax, rax
+    jz .u
+    dec rax
+    mov [rel pool_n], rax
+    lea rcx, [rel pool_h]
+    mov rbx, [rcx + rax*8]
+.u:
+    lea rdi, [rel pool_mutex]
+    CALLC pthread_mutex_unlock
+    test rbx, rbx
+    jz .d
+    mov rdi, rbx
+    call http_free
+    jmp .l
+.d:
+    LEAVE_RET
+
+; ---------------------------------------------------------------------
 ; argument validation (ids go straight into URL paths)
 ; ---------------------------------------------------------------------
 ; int valid_id(const char *s)   1 for 1..20 ASCII digits
+global valid_id
 valid_id:
     test rdi, rdi
     jz .bad
@@ -234,12 +326,13 @@ valid_emoji:
 ; long do_call(long method, sbuf *path, sbuf *body /*may be NULL*/)
 ; one request on a private handle; returns the HTTP status (0 = transport failure)
 ; ---------------------------------------------------------------------
+global do_call
 do_call:
     ENTER 32                        ; [0] resp sbuf, [24] handle
     mov r12, rdi
     mov r13, rsi
     mov r14, rdx
-    call http_new
+    call pool_get
     test rax, rax
     jz .fail
     mov [rsp + 24], rax
@@ -259,7 +352,7 @@ do_call:
     call rest_do
     mov r12, rax
     mov rdi, [rsp + 24]
-    call http_free
+    call pool_put
     lea rdi, [rsp]
     call sb_free
     mov rax, r12
@@ -324,7 +417,7 @@ casm_request:
     lea r14, [rel s_empty]
     xor r15d, r15d
 .hasbody:
-    call http_new
+    call pool_get
     test rax, rax
     jz .netfail
     mov [rsp + 24], rax
@@ -339,7 +432,7 @@ casm_request:
     call rest_do
     mov r12, rax
     mov rdi, [rsp + 24]
-    call http_free
+    call pool_put
     mov rax, [rsp + 32]
     test rax, rax
     jz .drop

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Runs the C test client against the mock Discord and verifies everything.
 usage: run_test.py <test binary>      (VALGRIND=1 to run under valgrind)"""
-import json, os, re, subprocess, sys
+import json, os, re, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -9,7 +9,12 @@ from mock_discord import Mock  # noqa: E402
 
 binary = os.path.abspath(sys.argv[1])
 vg = (['valgrind', '-q', '--error-exitcode=9', '--leak-check=no'] if os.environ.get('VALGRIND') else [])
-cafile = os.path.join(HERE, 'cert.pem')
+# throw-away self-signed certificate for the local mock (nothing secret is stored in the repo)
+certdir = tempfile.mkdtemp(prefix='caineasm-test-')
+cafile = os.path.join(certdir, 'cert.pem')
+subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '2', '-subj', '/CN=localhost',
+                '-addext', 'subjectAltName=DNS:localhost', '-keyout', os.path.join(certdir, 'key.pem'), '-out', cafile],
+               check=True, capture_output=True)
 fails = []
 checks = [0]
 
@@ -32,17 +37,110 @@ check(p.returncode == 0, f'misc exit {p.returncode} {p.stderr[-300:]}')
 for k, v in [('init_null', '-1'), ('init_empty', '-1'), ('run_noinit', '-1'), ('botid', 'null')]:
     check(f'MISC {k} {v}' in p.stdout, f'misc {k} expected {v}: {p.stdout!r}')
 
+# ------------------------------------------------------------ helper unit tests
+p = run('unit')
+check(p.returncode == 0 and re.search(r'UNIT pass=\d+ fail=0', p.stdout) is not None, f'unit tests: {p.stdout[-600:]!r} {p.stderr[-200:]}')
+
+# unescape fuzz against json.dumps + atomic truncation
+import random
+rnd = random.Random(12345)
+pool = ['a', 'Z', ' ', '"', '\\', '/', '\n', '\t', '\r', '\x01', '\x1f', 'é', 'ñ', '€', '中', '\U0001F600', '\U0001D11E', '\u00a0']
+cases = []
+for _ in range(5000):
+    t = ''.join(rnd.choice(pool) for _ in range(rnd.randint(0, 12)))
+    cases.append(json.dumps(t, ensure_ascii=rnd.random() < 0.5)[1:-1])
+inp = '\n'.join(c.encode().hex() for c in cases) + '\n'
+p = subprocess.run(vg + [binary, 'unescape'], input=inp, capture_output=True, text=True, timeout=300)
+check(p.returncode == 0, f'unescape fuzz exit {p.returncode} {p.stderr[-200:]}')
+outl = p.stdout.split('\n')
+bad = 0
+for idx, c in enumerate(cases):
+    full = json.loads('"' + c + '"').encode()
+    exp = [f'full {len(full)} {full.hex()}']
+    for cap in range(1, 10):
+        k = min(len(full), cap - 1)
+        while k > 0 and k < len(full) and (full[k] & 0xC0) == 0x80:
+            k -= 1
+        exp.append(f'cap {cap} {len(full)} {full[:k].hex()}')
+    got = outl[idx * 10: idx * 10 + 10]
+    if [g.rstrip() for g in got] != [e.rstrip() for e in exp]:
+        bad += 1
+        if bad <= 3:
+            print('fuzz mismatch', repr(c), got[:3], exp[:3])
+check(bad == 0 and len(outl) >= 50000, f'unescape fuzz: {bad} mismatches of {len(cases)}, lines {len(outl)}')
+
+# ------------------------------------------------------------ interactions (slash commands)
+m = Mock('inter', certdir)
+p = run('inter', m, 120)
+o, e = p.stdout, p.stderr
+check(p.returncode == 0 and 'RUN 0' in o, f'inter run: {o[-300:]!r} {e[-300:]}')
+ir = [d for k, d in m.log if k == 'rest']
+check(all(d['headers'].get('authorization') == 'Bot tok.en' for d in ir), 'interaction calls carry the bot Authorization header')
+ints = [l for l in o.split('\n') if l.startswith('INT ')]
+check(len(ints) == 7, f'7 parsed interactions ({len(ints)})')
+i1 = ints[0] if ints else ''
+for frag in ['id=3001', 'app=700', 'tok=tok_A-b.c1', 'guild=G1', 'chan=1001', 'uid=U1', 'uname=alice', 'cmd=ping',
+             'cid=c1', 'custom=<null>', 'type=2 ctype=1 appid=700', '"name":"text","type":3,"value":"he said \\"hi\\" \u00e9\\n"']:
+    check(frag in i1, f'interaction 3001 has {frag!r}: {i1!r}')
+i2 = next((l for l in ints if 'id=3002' in l), '')
+check('guild=<null>' in i2 and 'uid=U2' in i2 and 'uname=bob' in i2 and 'opts=<null>' in i2, f'DM interaction uses user.*: {i2!r}')
+i4 = next((l for l in ints if 'id=3004' in l), '')
+check('custom=btn1' in i4 and 'type=3' in i4 and 'cmd=<null>' in i4, f'component interaction: {i4!r}')
+check('OPT text 115 he said "hi" \u00e9\n' in o, 'option string value unescapes')
+check('OPT n 100 42\n' in o and 'OPT flag 98 true\n' in o and 'OPT nope 0 1' in o, 'number / bool / missing options')
+check('SUB1 2 ban' in o and 'SUB2 1 user' in o and 'SUB3 115 U9' in o and 'SUB4 0' in o, 'subcommand group -> subcommand -> option walk')
+for k, v in [('respond', 204), ('defer', 204), ('followup', 200), ('editresp', 200), ('delresp', 204), ('defer2', 204),
+             ('update', 204), ('plainresp', 204), ('badtype', -1), ('regglobal', 200), ('regguild', 200)]:
+    check(f'RET {k} {v}\n' in o, f'RET {k} {v}')
+for k in range(1, 9):
+    check(f'RET bad{k} -1\n' in o, f'invalid interaction argument bad{k} returns -1')
+check('KEEPPTR 1' in o and 'KEEP id=3002 app=700 tok=tok_B uname=bob cmd=work raw={"id":"3002","applic' in o,
+      'casm_interaction_keep copy is intact after the gateway buffer was reused')
+want = [
+    ('POST', '/api/v10/interactions/3001/tok_A-b.c1/callback',
+     {'type': 4, 'data': {'content': 'he said "hi" \u00e9\n', 'flags': 64, 'allowed_mentions': {'parse': ['users']}}}),
+    ('POST', '/api/v10/interactions/3002/tok_B/callback', {'type': 5}),
+    ('POST', '/api/v10/webhooks/700/tok_B', {'content': 'later "q" \u00e9', 'flags': 64, 'allowed_mentions': {'parse': ['users']}}),
+    ('PATCH', '/api/v10/webhooks/700/tok_B/messages/@original', {'content': 'edited', 'allowed_mentions': {'parse': ['users']}}),
+    ('DELETE', '/api/v10/webhooks/700/tok_B/messages/@original', None),
+    ('POST', '/api/v10/interactions/3003/tok_A-b.c1/callback', {'type': 5, 'data': {'flags': 64}}),
+    ('POST', '/api/v10/interactions/3004/tok_C/callback', {'type': 7, 'data': {'content': 'updated "x"'}}),
+    ('POST', '/api/v10/interactions/3004/tok_C/callback', {'type': 6}),
+    ('PUT', '/api/v10/applications/700/commands', json.loads('[{"name":"ping","description":"Pong","type":1,"options":[{"name":"text","description":"t","type":3}]}]')),
+    ('PUT', '/api/v10/applications/700/guilds/555/commands', json.loads('[{"name":"ping","description":"Pong","type":1,"options":[{"name":"text","description":"t","type":3}]}]')),
+]
+for meth, path, bd in want:
+    got = [d for d in ir if d['method'] == meth and d['path'] == path and (json.loads(d['body']) if d['body'] else None) == bd]
+    check(len(got) == 1, f'REST {meth} {path} body {bd}: matches {len(got)}')
+check(len(ir) == len(want), f'exactly {len(want)} interaction REST calls, invalid ones never reached the network (saw {len(ir)})')
+
 # ------------------------------------------------------------ REST from many threads
-m = Mock('main')
+m = Mock('main', certdir)
 p = run('threads', m, 120)
 check(p.returncode == 0, f'threads exit {p.returncode} {p.stderr[-300:]}')
 check('THREADS ok=80 bad=0' in p.stdout, f'80 parallel sends all returned 200: {p.stdout!r}')
 tp = [d for k, d in m.log if k == 'rest' and d['method'] == 'POST']
 check(len(tp) == 80, f'mock saw 80 POSTs, got {len(tp)}')
 check(len({json.loads(d['body'])['content'] for d in tp}) == 80, 'every parallel message body is intact and distinct')
+conns = len({d['conn'] for d in tp})
+check(1 < conns <= 8, f'parallel sends share at most 8 pooled connections, got {conns}')
+
+# ------------------------------------------------------------ connection reuse
+m = Mock('main', certdir)
+p = run('reuse', m, 120)
+check(p.returncode == 0 and 'REUSE ok=12 bad=0' in p.stdout, f'reuse run: {p.stdout!r} {p.stderr[-200:]}')
+rc = {d['conn'] for k, d in m.log if k == 'rest'}
+check(len(rc) == 1, f'12 sequential requests share ONE connection, got {len(rc)}')
+
+m = Mock('main', certdir, drop_after=4)
+p = run('reuse', m, 120)
+check(p.returncode == 0 and 'REUSE ok=12 bad=0' in p.stdout, f'reuse with server dropping connections: {p.stdout!r} {p.stderr[-200:]}')
+rc = [d for k, d in m.log if k == 'rest']
+check(len({d['conn'] for d in rc}) <= 4, f'server-dropped connections are re-established, conns={len({d["conn"] for d in rc})}')
+check(len(rc) == 12, f'no request is sent twice after a dropped connection (saw {len(rc)} for 12 calls)')
 
 # ------------------------------------------------------------ fatal close code
-m = Mock('fatal')
+m = Mock('fatal', certdir)
 p = run('fatal', m, 60)
 check(p.returncode == 0, f'fatal exit {p.returncode} {p.stderr[-300:]}')
 check('RUN 1' in p.stdout, f'fatal run result: {p.stdout!r}')
@@ -50,7 +148,7 @@ check('close code 4004' in p.stderr, 'fatal message logged on stderr')
 check(m.conn_n == 1, f'no reconnect after 4004 (conns={m.conn_n})')
 
 # ------------------------------------------------------------ full session
-m = Mock('main')
+m = Mock('main', certdir)
 p = run('main', m, 240)
 out, err = p.stdout, p.stderr
 open('/tmp/caineasm_test_stdout.txt', 'w').write(out)
@@ -87,9 +185,11 @@ for frag in ['id=2001', 'chan=1001', 'guild=G1', 'aid=U1', 'name=alice', 'nick=N
              'attach=[{"url":"https://cdn.example/a.png?x=1&y=2","content_type":"image/png"}]',
              'ment=[{"id":"900","username":"MockBot"}]', 'refaid=<null>']:
     check(frag in m1, f'2001 has {frag!r}: {m1!r}')
+check(' mme=1 rtm=0 pre=1 prerest=\\"x\\"\\nnl ' in m1, f'helpers on 2001 (mentions me, prefix): {m1!r}')
 m2 = next((l for l in msgs if ' id=2002 ' in l), '')
 check('guild=<null>' in m2 and 'nick=<null>' in m2 and 'chan=1002' in m2, f'DM message parse: {m2!r}')
 m3 = next((l for l in msgs if ' id=2003 ' in l), '')
+check(' rtm=1 mme=0' not in m3 and ' mme=0 rtm=1 ' in m3, f'is_reply_to_me on 2003: {m3!r}')
 check('refaid=900' in m3, f'reply ref author parse: {m3!r}')
 m4 = next((l for l in msgs if ' id=2004 ' in l), '')
 check('bot=1' in m4, f'bot flag parse: {m4!r}')
