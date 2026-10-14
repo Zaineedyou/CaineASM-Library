@@ -37,6 +37,18 @@ check(p.returncode == 0, f'misc exit {p.returncode} {p.stderr[-300:]}')
 for k, v in [('init_null', '-1'), ('init_empty', '-1'), ('run_noinit', '-1'), ('botid', 'null')]:
     check(f'MISC {k} {v}' in p.stdout, f'misc {k} expected {v}: {p.stdout!r}')
 
+# ------------------------------------------------------------ crash reporter (plain binary, valgrind would intercept signals)
+for mode in ('crash', 'crashstack'):
+    p = subprocess.run([binary, mode], capture_output=True, text=True, timeout=60)
+    check(p.returncode == -11, f'{mode}: still dies from SIGSEGV after reporting (rc {p.returncode})')
+    check('HANDLER 0' in p.stdout, f'{mode}: casm_set_crash_handler(1) returned 0')
+    check('CaineASM crash: SIGSEGV' in p.stderr and 'fault address 0x' in p.stderr and 'instruction 0x' in p.stderr, f'{mode}: header on stderr: {p.stderr[:200]!r}')
+    check('backtrace' in p.stderr and p.stderr.count('[0x') >= (2 if mode == 'crash' else 1), f'{mode}: backtrace lines: {p.stderr[-300:]!r}')
+p = subprocess.run([binary, 'crash'], capture_output=True, text=True, timeout=60)
+check('fault address 0x28,' in p.stderr, f'fault address of the garbage pointer is reported: {p.stderr[:160]!r}')
+p = subprocess.run([binary, 'crashoff'], capture_output=True, text=True, timeout=60)
+check(p.returncode == -11 and 'CaineASM crash' not in p.stderr and 'HANDLER off 0' in p.stdout, f'handler disabled: plain SIGSEGV, no report ({p.returncode})')
+
 # ------------------------------------------------------------ helper unit tests
 p = run('unit')
 check(p.returncode == 0 and re.search(r'UNIT pass=\d+ fail=0', p.stdout) is not None, f'unit tests: {p.stdout[-600:]!r} {p.stderr[-200:]}')

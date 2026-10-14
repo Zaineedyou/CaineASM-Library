@@ -36,6 +36,7 @@ static void on_message(const casm_message *m, void *user) {
 int main(void) {
     const char *token = getenv("DISCORD_TOKEN");
     if (!token || !*token) { fprintf(stderr, "set DISCORD_TOKEN\n"); return 1; }
+    casm_set_crash_handler(1);                      /* crash report + backtrace on stderr */
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     if (casm_init(token, CASM_INTENTS_DEFAULT) != 0) { fprintf(stderr, "init failed\n"); return 1; }

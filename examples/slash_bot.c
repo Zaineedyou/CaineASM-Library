@@ -107,6 +107,7 @@ static void on_event(const char *type, size_t tl, const char *d, size_t dl, void
 int main(void) {
     const char *token = getenv("DISCORD_TOKEN");
     if (!token || !*token) { fprintf(stderr, "set DISCORD_TOKEN\n"); return 1; }
+    casm_set_crash_handler(1);                      /* crash report + backtrace on stderr */
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     if (casm_init(token, CASM_INTENT_GUILDS) != 0) return 1;

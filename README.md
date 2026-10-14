@@ -18,12 +18,12 @@ Butuh `nasm`, `gcc`, `ld`, `objcopy`, `ar`, `libcurl4-openssl-dev`.
 
 ```
 make            # build/libcaineasm.a
-make test       # tes end-to-end lawan mock Discord lokal (178 pengecekan)
+make test       # tes end-to-end lawan mock Discord lokal (188 pengecekan)
 make valgrind   # tes yang sama di bawah valgrind
 make example    # build/ping_bot dan build/slash_bot
 ```
 
-Hanya 77 simbol `casm_*` yang terlihat dari luar (simbol internal dijadikan lokal lewat `objcopy`), jadi tidak bentrok dengan nama di kode kamu.
+Hanya 78 simbol `casm_*` yang terlihat dari luar (simbol internal dijadikan lokal lewat `objcopy`), jadi tidak bentrok dengan nama di kode kamu.
 
 ## Contoh
 ```c
@@ -76,6 +76,7 @@ Link: `cc app.c libcaineasm.a -Iinclude -l:libcurl.so.4 -pthread`. Contoh lengka
 | `casm_mentions_user(m, id)`, `casm_mentions_me(m)`, `casm_is_reply_to_me(m)` | Cek mention / reply |
 | `casm_match_prefix(&content, "caine", &rest)`, `casm_next_word(&teks, &kata, &sisa)` | Parsing perintah |
 | `casm_app_id()`, `casm_cleanup()` | ID aplikasi (setelah READY), bebaskan pool koneksi |
+| `casm_set_crash_handler(1)` | Kalau crash (SIGSEGV/SIGBUS/SIGFPE/SIGILL/SIGABRT) cetak sinyal, alamat fault, instruction pointer, dan backtrace ke stderr, lalu mati seperti biasa (core dump tetap ada) |
 | `casm_set_api_base / set_gateway_url / set_user_agent / set_ca_file / set_quiet` | Opsional |
 
 Fungsi REST mengembalikan status HTTP (2xx = sukses), `0` kalau transfer gagal, `-1` kalau argumen tidak valid (ID harus 1–20 digit, jadi tidak mungkin menyisipkan `/` atau `..` ke path).
@@ -86,6 +87,15 @@ Fungsi REST mengembalikan status HTTP (2xx = sukses), `0` kalau transfer gagal, 
 - Callback jalan di thread gateway. Pekerjaan lambat (misalnya panggil API AI) sebaiknya di thread sendiri. Fungsi REST aman dipanggil dari thread mana saja (tiap panggilan pakai handle curl sendiri).
 - Mention di pesan yang dikirim dibatasi ke user saja (`allowed_mentions.parse = ["users"]`), jadi tidak bisa ping `@everyone` atau role.
 
+## Kalau crash
+Panggil `casm_set_crash_handler(1)` di thread yang menjalankan `casm_run` (stack overflow ikut terlapor). Contoh keluaran:
+```
+💥 CaineASM crash: SIGSEGV (invalid memory access), fault address 0x28, instruction 0x557b10580ae1
+backtrace (addr2line -f -e <binary> <+offset>):
+./app(+0x9ae1)[0x557b10580ae1]
+```
+Ubah offset jadi nama fungsi dan baris: `addr2line -f -e ./app +0x9ae1` (binary harus punya info debug, bangun dengan `-g`). Backtrace mengikuti rantai `rbp`, jadi kode tanpa frame pointer (libc, libcurl, C dengan `-O2`) bisa tidak muncul. Alternatif tanpa handler: `gdb -batch -ex run -ex bt ./app` atau `valgrind ./app`.
+
 ## Batasan v0.1
 - **Satu client per proses** (state global).
 - Belum ada: voice, sharding, cache guild/user, rate limit per-bucket (hanya retry 1x untuk 429), kirim file/lampiran, komponen lain (user/role/channel select, Components V2 seperti Section/Container), builder command (JSON ditulis sendiri), pengecekan batas panjang (Discord yang menolak dengan 400), verifikasi tanda tangan interaksi via webhook HTTP (library ini menerima interaction lewat gateway).
@@ -94,4 +104,4 @@ Fungsi REST mengembalikan status HTTP (2xx = sukses), `0` kalau transfer gagal, 
 - **Belum dites langsung ke Discord asli**, hanya ke mock lokal (gateway + REST lewat TLS).
 
 ## Tes
-`tests/run_test.py` menjalankan `tests/test_caineasm.c` lawan `tests/mock_discord.py`: identify, heartbeat, resume dengan seq yang benar, invalid session lalu identify ulang, close code fatal 4004, parsing semua field pesan (guild, DM, reply, bot, attachment, mention), semua fungsi REST (isi body, header, method), pemecahan pesan panjang, retry 429, validasi argumen, 80 pengiriman paralel dari 8 thread, reuse koneksi (termasuk saat server memutus koneksi), vektor tes + fuzz 5000 kasus untuk `casm_unescape` (dibanding `json.dumps`, termasuk pemotongan UTF-8), helper pesan, dan seluruh alur slash command: parsing (member/DM/komponen), respond/defer/followup/edit/delete (body, path, header), option & subcommand, daftar command, validasi argumen, `casm_interaction_keep` setelah buffer gateway dipakai ulang, dan semua builder (embed, tombol, menu, modal, payload) dibandingkan field demi field dengan JSON yang diharapkan, plus pembaca modal / menu / autocomplete.
+`tests/run_test.py` menjalankan `tests/test_caineasm.c` lawan `tests/mock_discord.py`: identify, heartbeat, resume dengan seq yang benar, invalid session lalu identify ulang, close code fatal 4004, parsing semua field pesan (guild, DM, reply, bot, attachment, mention), semua fungsi REST (isi body, header, method), pemecahan pesan panjang, retry 429, validasi argumen, 80 pengiriman paralel dari 8 thread, reuse koneksi (termasuk saat server memutus koneksi), vektor tes + fuzz 5000 kasus untuk `casm_unescape` (dibanding `json.dumps`, termasuk pemotongan UTF-8), helper pesan, crash handler (sinyal tetap mematikan proses, alamat fault dan backtrace tercetak, termasuk stack overflow), dan seluruh alur slash command: parsing (member/DM/komponen), respond/defer/followup/edit/delete (body, path, header), option & subcommand, daftar command, validasi argumen, `casm_interaction_keep` setelah buffer gateway dipakai ulang, dan semua builder (embed, tombol, menu, modal, payload) dibandingkan field demi field dengan JSON yang diharapkan, plus pembaca modal / menu / autocomplete.

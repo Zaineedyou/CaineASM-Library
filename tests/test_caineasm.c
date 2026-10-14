@@ -6,6 +6,7 @@
  *   misc                    argument checks that need no network
  *   unit                    helper functions (unescape, prefix, words, mentions)
  *   inter <port> <cafile>   slash commands / interactions against the mock
+ *   crash | crashoff | crashstack   deliberate crashes (no network) for casm_set_crash_handler
  *   unescape                fuzz tool: hex lines on stdin -> decoded hex on stdout
  * Everything the harness verifies is printed on stdout as "KEY value" lines. */
 #include <stdio.h>
@@ -357,6 +358,8 @@ static void on_interaction(const casm_interaction *i, void *u) {
     fflush(stdout);
 }
 
+static int overflow(int n) { volatile char pad[512]; pad[0] = (char)n; return overflow(n + 1) + pad[0]; }
+
 static volatile long thr_ok, thr_bad;
 static void *thr(void *arg) {
     char txt[64];
@@ -376,6 +379,15 @@ int main(int argc, char **argv) {
         printf("MISC run_noinit %d\n", casm_run());
         printf("MISC botid %s\n", casm_bot_id() ? "set" : "null");
         return 0;
+    }
+    if (argc >= 2 && strncmp(argv[1], "crash", 5) == 0) {        /* run by the harness without valgrind */
+        if (strcmp(argv[1], "crashoff") != 0) printf("HANDLER %d\n", casm_set_crash_handler(1));
+        else { casm_set_crash_handler(1); printf("HANDLER off %d\n", casm_set_crash_handler(0)); }
+        fflush(stdout);
+        if (strcmp(argv[1], "crashstack") == 0) return overflow(1);
+        casm_str s = { "x", 1 };
+        (void)s;
+        return (int)casm_respond((const casm_interaction *)(size_t)8, "hi", 2, 0);   /* garbage pointer inside the library */
     }
     if (argc >= 2 && strcmp(argv[1], "unit") == 0) { unit_tests(); return u_fail != 0; }
     if (argc >= 2 && strcmp(argv[1], "unescape") == 0) { unescape_stdin(); return 0; }
