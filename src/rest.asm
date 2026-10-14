@@ -362,6 +362,7 @@ do_call:
     LEAVE_RET
 
 ; void build_path(sbuf *sb, const char *chan, const char *msg /*or NULL*/, const char *suffix /*or NULL*/)
+global build_path
 build_path:
     ENTER 0
     mov rbx, rdi

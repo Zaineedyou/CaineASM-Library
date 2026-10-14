@@ -77,7 +77,7 @@ check(p.returncode == 0 and 'RUN 0' in o, f'inter run: {o[-300:]!r} {e[-300:]}')
 ir = [d for k, d in m.log if k == 'rest']
 check(all(d['headers'].get('authorization') == 'Bot tok.en' for d in ir), 'interaction calls carry the bot Authorization header')
 ints = [l for l in o.split('\n') if l.startswith('INT ')]
-check(len(ints) == 7, f'7 parsed interactions ({len(ints)})')
+check(len(ints) == 12, f'12 parsed interactions ({len(ints)})')
 i1 = ints[0] if ints else ''
 for frag in ['id=3001', 'app=700', 'tok=tok_A-b.c1', 'guild=G1', 'chan=1001', 'uid=U1', 'uname=alice', 'cmd=ping',
              'cid=c1', 'custom=<null>', 'type=2 ctype=1 appid=700', '"name":"text","type":3,"value":"he said \\"hi\\" \u00e9\\n"']:
@@ -112,7 +112,48 @@ want = [
 for meth, path, bd in want:
     got = [d for d in ir if d['method'] == meth and d['path'] == path and (json.loads(d['body']) if d['body'] else None) == bd]
     check(len(got) == 1, f'REST {meth} {path} body {bd}: matches {len(got)}')
-check(len(ir) == len(want), f'exactly {len(want)} interaction REST calls, invalid ones never reached the network (saw {len(ir)})')
+AM = {'parse': ['users']}
+EMB = {'title': 'Judul "q"', 'description': 'baris1\nbaris2 \u00e9', 'url': 'https://x/e', 'timestamp': '2026-10-13T11:00:00Z',
+       'footer': {'text': 'foot'}, 'author': {'name': 'auth'}, 'image': {'url': 'https://x/i.png'},
+       'thumbnail': {'url': 'https://x/t.png'}, 'color': 0x5865F2,
+       'fields': [{'name': 'f1', 'value': 'v1', 'inline': True}, {'name': 'f2', 'value': 'v2'}]}
+ROWS = [{'type': 1, 'components': [
+            {'type': 2, 'style': 1, 'label': 'Klik', 'custom_id': 'btn_ok'},
+            {'type': 2, 'style': 4, 'label': 'Hapus "x"', 'custom_id': 'btn_del', 'disabled': True},
+            {'type': 2, 'style': 5, 'label': 'Web', 'url': 'https://example.com/a?b=1&c=2'}]},
+        {'type': 1, 'components': [{'type': 3, 'custom_id': 'sel1', 'placeholder': 'Pilih', 'min_values': 1, 'max_values': 2,
+            'options': [{'label': 'A', 'value': 'a', 'description': 'desc A', 'default': True}, {'label': 'B', 'value': 'b'}]}]}]
+PAY = {'content': 'hai "dunia"', 'embeds': [EMB], 'components': ROWS}
+ui = [
+    ('POST', '/api/v10/interactions/3010/tok_U/callback', {'type': 4, 'data': dict(PAY, allowed_mentions=AM)}),
+    ('POST', '/api/v10/channels/1001/messages', dict(PAY, message_reference={'message_id': '2001', 'fail_if_not_exists': False},
+                                                    allowed_mentions={'parse': ['users'], 'replied_user': True})),
+    ('POST', '/api/v10/channels/1001/messages', dict(PAY, allowed_mentions=AM)),
+    ('PATCH', '/api/v10/channels/1001/messages/5000', dict(PAY, allowed_mentions=AM)),
+    ('POST', '/api/v10/webhooks/700/tok_U', {'content': 'only text', 'flags': 64, 'allowed_mentions': AM}),
+    ('PATCH', '/api/v10/webhooks/700/tok_U/messages/@original', {'content': 'only text', 'flags': 64, 'allowed_mentions': AM}),
+    ('POST', '/api/v10/interactions/3011/tok_U/callback', {'type': 9, 'data': {'custom_id': 'mod1', 'title': 'Titulo "q"', 'components': [
+        {'type': 18, 'label': 'Nama', 'component': {'type': 4, 'custom_id': 'name', 'style': 1, 'placeholder': 'isi nama',
+                                                    'min_length': 1, 'max_length': 50, 'required': True}},
+        {'type': 18, 'label': 'Bio', 'component': {'type': 4, 'custom_id': 'bio', 'style': 2, 'required': False}}]}}),
+    ('POST', '/api/v10/interactions/3012/tok_U/callback', {'type': 4, 'data': {'content': 'ok', 'allowed_mentions': AM}}),
+    ('POST', '/api/v10/interactions/3013/tok_U/callback', {'type': 7, 'data': {'content': 'updated', 'allowed_mentions': AM}}),
+    ('POST', '/api/v10/interactions/3014/tok_U/callback', {'type': 8, 'data': {'choices': [
+        {'name': 'Alpha', 'value': 'a'}, {'name': 'Be"ta', 'value': 'b'}]}}),
+]
+for meth, path, bd in ui:
+    got = [d for d in ir if d['method'] == meth and d['path'] == path and (json.loads(d['body']) if d['body'] else None) == bd]
+    check(len(got) == 1, f'UI {meth} {path} body {json.dumps(bd)[:90]}: matches {len(got)}')
+for k, v in [('panel', 204), ('sendreply', 200), ('sendreply2', 200), ('editmsg', 200), ('followreply', 200), ('editreply', 200),
+             ('badr1', -1), ('badr2', -1), ('badr3', -1), ('bade1', -1), ('bade2', -1), ('bade3', -1), ('bade4', -1), ('bade5', -1),
+             ('bade6', 1), ('showmodal', 204), ('badmodal', -1), ('modalresp', 204), ('selupdate', 204), ('ac', 204),
+             ('acbad1', -1), ('acbad2', -1)]:
+    check(f'RET {k} {v}\n' in o, f'RET {k} {v}')
+check('MODAL name 115 Bud \\"i\\"\\n\n' in o and 'MODAL pick 97\n' in o and 'MODAL pick1 115 y\n' in o and 'MODAL none 0 1' in o,
+      'modal values: text, select values, missing')
+check('SELV 1\n' in o and 'SELV0 115 a\n' in o and 'SELV1 115 b\n' in o and 'SELV2 0 \n' in o, 'select values via casm_array_at')
+check('FOCUS 1 q he\n' in o, 'focused option found inside a subcommand')
+check(len(ir) == len(want) + len(ui), f'exactly {len(want) + len(ui)} interaction REST calls, invalid ones never reached the network (saw {len(ir)})')
 
 # ------------------------------------------------------------ REST from many threads
 m = Mock('main', certdir)

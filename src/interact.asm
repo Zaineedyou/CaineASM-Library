@@ -182,6 +182,7 @@ ix_path:
     LEAVE_RET
 
 ; long ix_send(long method, const casm_interaction *i, long kind, sbuf *body /*or NULL*/)
+global ix_send
 ix_send:
     ENTER 32                        ; [0] path
     mov r12, rdi

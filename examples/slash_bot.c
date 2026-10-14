@@ -12,6 +12,7 @@
 
 static const char *COMMANDS =
     "[{\"name\":\"ping\",\"description\":\"Pong\",\"type\":1},"
+    "{\"name\":\"panel\",\"description\":\"Embed + tombol + menu + modal\",\"type\":1},"
     "{\"name\":\"echo\",\"description\":\"Ulangi teks (jawaban tertunda)\",\"type\":1,"
     "\"options\":[{\"name\":\"text\",\"description\":\"Teksnya\",\"type\":3,\"required\":true}]}]";
 
@@ -31,9 +32,58 @@ static void *slow_echo(void *arg) {
     return NULL;
 }
 
+static int is(casm_str s, const char *x) { return s.ptr && s.len == strlen(x) && !memcmp(s.ptr, x, s.len); }
+
+static void show_panel(const casm_interaction *i) {
+    casm_embed *e = casm_embed_new();
+    casm_embed_title(e, "CaineASM-Library");
+    casm_embed_description(e, "Embed, tombol, menu pilihan dan modal dari Assembly.");
+    casm_embed_color(e, 0x5865F2);
+    casm_embed_field(e, "Fitur", "gateway, REST, slash command", 1);
+    casm_row *buttons = casm_row_new();
+    casm_row_button(buttons, CASM_BUTTON_PRIMARY, "Isi form", "open_form", 0);
+    casm_row_button(buttons, CASM_BUTTON_LINK, "Dokumentasi", "https://docs.discord.com/developers", 0);
+    casm_select *menu = casm_select_new("pick", "Pilih satu", -1, 0);
+    casm_select_option(menu, "Merah", "red", NULL, 0);
+    casm_select_option(menu, "Biru", "blue", "warna dingin", 0);
+    casm_row *menu_row = casm_row_new();
+    casm_row_select(menu_row, menu);
+    casm_reply *r = casm_reply_new();
+    casm_reply_embed(r, e); casm_reply_row(r, buttons); casm_reply_row(r, menu_row);
+    casm_respond_reply(i, r);
+    casm_builder_free(r); casm_builder_free(menu_row); casm_builder_free(menu);
+    casm_builder_free(buttons); casm_builder_free(e);
+}
+
 static void on_interaction(const casm_interaction *i, void *user) {
     (void)user;
+    if (i->type == 3) {                             /* button / select menu */
+        if (is(i->custom_id, "open_form")) {
+            casm_modal *m = casm_modal_new("form", "Form kecil");
+            casm_modal_input(m, "nama", "Nama kamu", 0, "ketik di sini", 1, 40, 1);
+            casm_show_modal(i, m);
+            casm_builder_free(m);
+        } else if (is(i->custom_id, "pick")) {
+            casm_str vs, v;
+            if (casm_select_values(i, &vs) && casm_array_at(&vs, 0, &v) == 's') {
+                char t[160]; int n = snprintf(t, sizeof t, "Kamu pilih: %.*s", (int)v.len, v.ptr);
+                casm_respond(i, t, (size_t)n, CASM_MSG_EPHEMERAL);
+            }
+        }
+        return;
+    }
+    if (i->type == 5) {                             /* modal submitted */
+        casm_str v; char dec[128], t[200];
+        if (casm_modal_value(i, "nama", &v) == 's') {
+            size_t n = casm_unescape(v.ptr, v.len, dec, sizeof dec);
+            if (n >= sizeof dec) n = sizeof dec - 1;
+            int k = snprintf(t, sizeof t, "Halo, %.*s!", (int)n, dec);
+            casm_respond(i, t, (size_t)k, CASM_MSG_EPHEMERAL);
+        }
+        return;
+    }
     if (i->type != 2) return;                       /* application commands only */
+    if (is(i->command_name, "panel")) { show_panel(i); return; }
     if (i->command_name.len == 4 && !memcmp(i->command_name.ptr, "ping", 4)) {
         casm_respond(i, "pong", 4, 0);              /* first response within 3 seconds */
     } else if (i->command_name.len == 4 && !memcmp(i->command_name.ptr, "echo", 4)) {

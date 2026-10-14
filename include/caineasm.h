@@ -200,6 +200,87 @@ int casm_subcommand(const casm_str *options, casm_str *name, casm_str *sub_optio
 casm_interaction *casm_interaction_keep(const casm_interaction *i);
 void casm_interaction_release(casm_interaction *i);
 
+/* ---- embeds, buttons, select menus, modals ----
+ * Builders return opaque handles (NULL on failure); setters return 0, or -1 for a
+ * NULL argument. All builder strings are NUL-terminated UTF-8 (escaped for you).
+ * Discord enforces its own limits and answers 400 when they are broken: embed
+ * title 256, description 4096, 25 fields (name 256 / value 1024), footer 2048,
+ * author 256, 6000 characters in total, 10 embeds; 5 rows per message, 5 buttons
+ * or 1 select per row, button label 80, custom_id 1-100, select 25 options,
+ * 5 inputs per modal, modal title 45.
+ * Release every handle with casm_builder_free (it does not matter whether it was
+ * already added to a reply: adding copies the JSON). */
+typedef struct casm_embed  casm_embed;
+typedef struct casm_row    casm_row;
+typedef struct casm_select casm_select;
+typedef struct casm_modal  casm_modal;
+typedef struct casm_reply  casm_reply;
+void casm_builder_free(void *handle);
+
+casm_embed *casm_embed_new(void);
+int casm_embed_title(casm_embed *e, const char *s);
+int casm_embed_description(casm_embed *e, const char *s);
+int casm_embed_url(casm_embed *e, const char *s);
+int casm_embed_timestamp(casm_embed *e, const char *iso8601);   /* "2026-10-13T11:00:00Z" */
+int casm_embed_footer(casm_embed *e, const char *text);
+int casm_embed_author(casm_embed *e, const char *name);
+int casm_embed_image(casm_embed *e, const char *url);
+int casm_embed_thumbnail(casm_embed *e, const char *url);
+int casm_embed_color(casm_embed *e, unsigned long rgb);         /* 0xRRGGBB */
+int casm_embed_field(casm_embed *e, const char *name, const char *value, int inline_);
+
+/* A row holds up to 5 buttons OR one select. Styles: 1 primary, 2 secondary,
+ * 3 success, 4 danger (id_or_url = custom_id), 5 link (id_or_url = URL). */
+#define CASM_BUTTON_PRIMARY   1
+#define CASM_BUTTON_SECONDARY 2
+#define CASM_BUTTON_SUCCESS   3
+#define CASM_BUTTON_DANGER    4
+#define CASM_BUTTON_LINK      5
+casm_row *casm_row_new(void);
+int casm_row_button(casm_row *r, int style, const char *label, const char *id_or_url, int disabled);
+int casm_row_select(casm_row *r, casm_select *s);
+
+/* String select. min_values < 0 and max_values <= 0 keep Discord's defaults (1 / 1). */
+casm_select *casm_select_new(const char *custom_id, const char *placeholder,
+                             long min_values, long max_values);
+int casm_select_option(casm_select *s, const char *label, const char *value,
+                       const char *description, int is_default);
+
+/* Modal with text inputs (each wrapped in a Label, as the current docs require).
+ * paragraph = 1 for multi-line. min_length / max_length 0 = no limit. */
+casm_modal *casm_modal_new(const char *custom_id, const char *title);
+int casm_modal_input(casm_modal *m, const char *custom_id, const char *label, int paragraph,
+                     const char *placeholder, long min_length, long max_length, int required);
+
+/* ---- message payload: text + embeds + rows ---- */
+casm_reply *casm_reply_new(void);
+int casm_reply_content(casm_reply *r, const char *text, size_t len);   /* raw UTF-8 */
+int casm_reply_flags(casm_reply *r, long flags);                       /* e.g. CASM_MSG_EPHEMERAL */
+int casm_reply_embed(casm_reply *r, casm_embed *e);
+int casm_reply_row(casm_reply *r, casm_row *row);
+
+/* Send a payload. Same return values as the other REST calls. A reply payload can be
+ * reused for several sends. */
+long casm_send_reply(const char *channel_id, casm_reply *r, const char *reply_to /* or NULL */);
+long casm_edit_message(const char *channel_id, const char *message_id, casm_reply *r);
+long casm_respond_reply(const casm_interaction *i, casm_reply *r);        /* first response (204) */
+long casm_update_reply(const casm_interaction *i, casm_reply *r);         /* button / select: edit its message (204) */
+long casm_followup_reply(const casm_interaction *i, casm_reply *r);       /* 200 */
+long casm_edit_response_reply(const casm_interaction *i, casm_reply *r);  /* 200 */
+long casm_show_modal(const casm_interaction *i, casm_modal *m);           /* 204; not allowed as an answer to a modal */
+
+/* Autocomplete (interaction type 4): up to 25 string choices, arrays of n entries. */
+long casm_autocomplete(const casm_interaction *i, const char *const *names,
+                       const char *const *values, size_t n);
+/* The option being typed (name + current text); 1 / 0. Either out pointer may be NULL. */
+int casm_option_focused(const casm_interaction *i, casm_str *name, casm_str *value);
+
+/* Component / modal answers. */
+int casm_select_values(const casm_interaction *i, casm_str *values);   /* data.values array; 1 / 0 */
+int casm_array_at(const casm_str *array, size_t index, casm_str *out); /* JSON type of the element, 0 = none */
+/* Submitted modal input by its custom_id: 's' (text, JSON-escaped), 'a' (select values), 0. */
+int casm_modal_value(const casm_interaction *i, const char *custom_id, casm_str *out);
+
 #ifdef __cplusplus
 }
 #endif

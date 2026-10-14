@@ -182,6 +182,14 @@ class Mock:
             self._inter('3004', type=3, token='tok_C', data={'custom_id': 'btn1', 'component_type': 2}),
             self._inter('3005', 'bad', token='bad/tok'),
             self._inter('3006', 'register'),
+            self._inter('3010', 'panel', token='tok_U'),
+            self._inter('3011', 'form', token='tok_U'),
+            self._inter('3012', type=5, token='tok_U', data={'custom_id': 'mod1', 'components': [
+                {'type': 18, 'id': 1, 'component': {'type': 4, 'id': 2, 'custom_id': 'name', 'value': 'Bud "i"\n'}},
+                {'type': 18, 'id': 3, 'component': {'type': 3, 'custom_id': 'pick', 'values': ['x', 'y']}}]}),
+            self._inter('3013', type=3, token='tok_U', data={'custom_id': 'sel1', 'component_type': 3, 'values': ['a', 'b']}),
+            self._inter('3014', 'search', type=4, token='tok_U', data={'options': [
+                {'name': 'sub', 'type': 1, 'options': [{'name': 'q', 'type': 3, 'value': 'he', 'focused': True}]}]}),
             self._inter('3007', 'done'),
         ]
 

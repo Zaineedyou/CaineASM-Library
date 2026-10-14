@@ -221,6 +221,57 @@ static void *inter_worker(void *arg) {
     return NULL;
 }
 
+
+static void panel_test(const casm_interaction *i) {
+    casm_embed *e = casm_embed_new();
+    casm_embed_title(e, "Judul \"q\""); casm_embed_description(e, "baris1\nbaris2 \xC3\xA9");
+    casm_embed_url(e, "https://x/e"); casm_embed_timestamp(e, "2026-10-13T11:00:00Z");
+    casm_embed_footer(e, "foot"); casm_embed_author(e, "auth");
+    casm_embed_image(e, "https://x/i.png"); casm_embed_thumbnail(e, "https://x/t.png");
+    casm_embed_color(e, 0x5865F2);
+    casm_embed_field(e, "f1", "v1", 1); casm_embed_field(e, "f2", "v2", 0);
+    casm_row *r1 = casm_row_new();
+    casm_row_button(r1, CASM_BUTTON_PRIMARY, "Klik", "btn_ok", 0);
+    casm_row_button(r1, CASM_BUTTON_DANGER, "Hapus \"x\"", "btn_del", 1);
+    casm_row_button(r1, CASM_BUTTON_LINK, "Web", "https://example.com/a?b=1&c=2", 0);
+    casm_select *s = casm_select_new("sel1", "Pilih", 1, 2);
+    casm_select_option(s, "A", "a", "desc A", 1);
+    casm_select_option(s, "B", "b", NULL, 0);
+    casm_row *r2 = casm_row_new();
+    casm_row_select(r2, s);
+    casm_reply *rp = casm_reply_new();
+    casm_reply_content(rp, "hai \"dunia\"", 11);
+    casm_reply_embed(rp, e); casm_reply_row(rp, r1); casm_reply_row(rp, r2);
+    casm_reply *rp2 = casm_reply_new();
+    casm_reply_content(rp2, "only text", 9); casm_reply_flags(rp2, CASM_MSG_EPHEMERAL);
+    printf("RET panel %ld\n", casm_respond_reply(i, rp));
+    printf("RET sendreply %ld\n", casm_send_reply("1001", rp, "2001"));
+    printf("RET sendreply2 %ld\n", casm_send_reply("1001", rp, NULL));
+    printf("RET editmsg %ld\n", casm_edit_message("1001", "5000", rp));
+    printf("RET followreply %ld\n", casm_followup_reply(i, rp2));
+    printf("RET editreply %ld\n", casm_edit_response_reply(i, rp2));
+    printf("RET badr1 %ld\n", casm_send_reply("abc", rp, NULL));
+    printf("RET badr2 %ld\n", casm_respond_reply(i, NULL));
+    printf("RET badr3 %ld\n", casm_edit_message("1001", NULL, rp));
+    printf("RET bade1 %d\n", casm_embed_title(NULL, "x"));
+    printf("RET bade2 %d\n", casm_row_button(r1, 9, "a", "b", 0));
+    printf("RET bade3 %d\n", casm_embed_color(e, 0x1000000));
+    printf("RET bade4 %d\n", casm_embed_field(e, "n", NULL, 0));
+    printf("RET bade5 %d\n", casm_reply_embed(rp, NULL));
+    printf("RET bade6 %d\n", casm_select_new(NULL, NULL, -1, 0) == NULL);
+    casm_builder_free(e); casm_builder_free(r1); casm_builder_free(s); casm_builder_free(r2);
+    casm_builder_free(rp); casm_builder_free(rp2); casm_builder_free(NULL);
+}
+
+static void form_test(const casm_interaction *i) {
+    casm_modal *m = casm_modal_new("mod1", "Titulo \"q\"");
+    casm_modal_input(m, "name", "Nama", 0, "isi nama", 1, 50, 1);
+    casm_modal_input(m, "bio", "Bio", 1, NULL, 0, 0, 0);
+    printf("RET showmodal %ld\n", casm_show_modal(i, m));
+    printf("RET badmodal %ld\n", casm_show_modal(i, NULL));
+    casm_builder_free(m);
+}
+
 static void on_interaction(const casm_interaction *i, void *u) {
     (void)u;
     printf("INT");
@@ -254,6 +305,33 @@ static void on_interaction(const casm_interaction *i, void *u) {
         printf("SUB3 %d %.*s\n", c, (int)who.len, who.ptr);
         printf("SUB4 %d\n", casm_subcommand(&sub2, &name, &sub));
         printf("RET defer2 %ld\n", casm_defer(i, CASM_MSG_EPHEMERAL));
+    } else if (starts_str(i->command_name, "panel")) {
+        panel_test(i);
+    } else if (starts_str(i->command_name, "form")) {
+        form_test(i);
+    } else if (i->type == 5) {
+        casm_str v, e2; int t, c;
+        t = casm_modal_value(i, "name", &v);   printf("MODAL name %d %.*s\n", t, (int)v.len, v.ptr);
+        t = casm_modal_value(i, "pick", &v);   printf("MODAL pick %d\n", t);
+        c = casm_array_at(&v, 1, &e2);         printf("MODAL pick1 %d %.*s\n", c, (int)e2.len, e2.ptr);
+        t = casm_modal_value(i, "none", &v);   printf("MODAL none %d %d\n", t, v.ptr == NULL);
+        printf("RET modalresp %ld\n", casm_respond(i, "ok", 2, 0));
+    } else if (i->type == 4) {
+        casm_str n, v;
+        int f = casm_option_focused(i, &n, &v);
+        printf("FOCUS %d %.*s %.*s\n", f, (int)n.len, n.ptr, (int)v.len, v.ptr);
+        const char *names[2] = { "Alpha", "Be\"ta" }, *vals[2] = { "a", "b" };
+        printf("RET ac %ld\n", casm_autocomplete(i, names, vals, 2));
+        printf("RET acbad1 %ld\n", casm_autocomplete(i, names, vals, 26));
+        printf("RET acbad2 %ld\n", casm_autocomplete(i, NULL, NULL, 1));
+    } else if (starts_str(i->custom_id, "sel1")) {
+        casm_str vs, e3; int c;
+        printf("SELV %d\n", casm_select_values(i, &vs));
+        for (size_t k = 0; k < 3; k++) { c = casm_array_at(&vs, k, &e3); printf("SELV%zu %d %.*s\n", k, c, (int)e3.len, c ? e3.ptr : ""); }
+        casm_reply *r = casm_reply_new();
+        casm_reply_content(r, "updated", 7);
+        printf("RET selupdate %ld\n", casm_update_reply(i, r));
+        casm_builder_free(r);
     } else if (i->type == 3) {
         const char *d = "{\"content\":\"updated \\\"x\\\"\"}";
         printf("RET update %ld\n", casm_interaction_response(i, 7, d, strlen(d)));

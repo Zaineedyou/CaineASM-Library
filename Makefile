@@ -4,7 +4,7 @@ AR   ?= ar
 LD   ?= ld
 OBJCOPY ?= objcopy
 
-MODS := util json net gateway core rest helpers interact
+MODS := util json net gateway core rest helpers interact build
 OBJS := $(addprefix build/,$(addsuffix .o,$(MODS)))
 LIBS := -l:libcurl.so.4 -pthread
 
