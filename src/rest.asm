@@ -9,6 +9,7 @@
 %define POOL_MAX 8
 
 extern free, pthread_mutex_lock, pthread_mutex_unlock
+extern now_ms
 extern sb_init, sb_free, sb_reset, sb_append, sb_appends, sb_append_json_esc
 extern json_get, parse_u64, sleep_ms, chunk_next, trim_span
 extern http_new, http_free, http_do
@@ -76,14 +77,449 @@ parse_retry_ms:
     mov rax, rbx
     LEAVE_RET
 
+; ---------------------------------------------------------------------
+; rate limits (Discord docs, "Rate Limits"): the response headers say how many
+; requests are left in a bucket and when it resets. Buckets are tracked per
+; route (method + path, with the top-level resource id of channels / guilds /
+; webhooks kept and other ids folded), and a request on an empty bucket waits
+; for the reset instead of earning a 429. A 429 still retries once, and a
+; global 429 pauses every route. Interaction endpoints are not tracked (they
+; are exempt from the global limit and limited per interaction).
+; ---------------------------------------------------------------------
+%define RL_SLOTS 64
+section .bss
+alignb 8
+rl_mutex:        resb 40
+rl_global_until: resq 1
+rl_tab:          resb RL_SLOTS * 24     ; {hash, remaining, reset_at_ms}
+
+section .rodata
+h_remaining: db "x-ratelimit-remaining:", 0
+h_resetafter:db "x-ratelimit-reset-after:", 0
+h_global:    db "x-ratelimit-global:", 0
+w_interact:  db "interactions", 0
+w_channels:  db "channels", 0
+w_guilds:    db "guilds", 0
+w_webhooks:  db "webhooks", 0
+c_idseg:     db ":id", 0
+c_xseg:      db ":x", 0
+
+section .text
+
+; unsigned long fnv_bytes(unsigned long h, const char *p, size_t n)   FNV-1a
+fnv_bytes:
+    mov rax, rdi
+    mov r8, 0x100000001b3
+    xor ecx, ecx
+.l:
+    cmp rcx, rdx
+    jae .d
+    movzx edi, byte [rsi + rcx]
+    xor rax, rdi
+    imul rax, r8
+    inc rcx
+    jmp .l
+.d:
+    ret
+
+; int seg_eq(const char *p, size_t n, const char *lit)   exact match
+seg_eq:
+    xor ecx, ecx
+.l:
+    movzx eax, byte [rdx + rcx]
+    test al, al
+    jz .end
+    cmp rcx, rsi
+    jae .no
+    cmp al, [rdi + rcx]
+    jne .no
+    inc rcx
+    jmp .l
+.end:
+    xor eax, eax
+    cmp rcx, rsi
+    sete al
+    ret
+.no:
+    xor eax, eax
+    ret
+
+; unsigned long rl_hash(long method, const char *path)
+; 0 = do not rate-limit here (interaction endpoints)
+rl_hash:
+    ENTER 0
+    mov rbx, 0xcbf29ce484222325
+    xor rbx, rdi
+    mov rax, 0x100000001b3
+    imul rbx, rax
+    mov r13, rsi                    ; cursor
+    xor r14d, r14d                  ; 1 major literal just seen, 2 major id kept, 4 webhook token next, 8 that literal was "webhooks"
+.seg:
+    cmp byte [r13], '/'
+    jne .end
+    mov rdi, rbx
+    lea rsi, [r13]
+    mov edx, 1
+    call fnv_bytes                  ; feeds the '/'
+    mov rbx, rax
+    inc r13
+    mov r15, r13                    ; segment start
+.scan:
+    movzx eax, byte [r13]
+    test al, al
+    jz .sd
+    cmp al, '/'
+    je .sd
+    cmp al, '?'
+    je .sd
+    inc r13
+    jmp .scan
+.sd:
+    mov r12, r13
+    sub r12, r15                    ; segment length
+    test r12, r12
+    jz .seg
+    xor ecx, ecx
+.dg:
+    cmp rcx, r12
+    jae .numeric
+    movzx eax, byte [r15 + rcx]
+    sub eax, '0'
+    cmp eax, 9
+    ja .literal
+    inc rcx
+    jmp .dg
+.numeric:
+    test r14d, 1
+    jz .idx
+    test r14d, 2
+    jnz .idx
+    ; the top-level resource id: keep it
+    mov edx, r14d
+    and edx, 8
+    shr edx, 1                      ; 8 -> 4 (webhook: a token follows)
+    or edx, 2
+    mov r14d, edx
+    mov rdi, rbx
+    mov rsi, r15
+    mov rdx, r12
+    call fnv_bytes
+    mov rbx, rax
+    jmp .seg
+.idx:
+    and r14d, 2                     ; forget "major literal seen" and "token next"
+    mov rdi, rbx
+    lea rsi, [rel c_idseg]
+    mov edx, 3
+    call fnv_bytes
+    mov rbx, rax
+    jmp .seg
+.literal:
+    test r14d, 4
+    jz .nottok
+    and r14d, 2                     ; the webhook token is part of the key
+    mov rdi, rbx
+    mov rsi, r15
+    mov rdx, r12
+    call fnv_bytes
+    mov rbx, rax
+    jmp .seg
+.nottok:
+    mov rdi, r15
+    mov rsi, r12
+    lea rdx, [rel w_interact]
+    call seg_eq
+    test eax, eax
+    jnz .bypass
+    xor ecx, ecx
+.pc:                                ; a '%' or ':' marks an emoji / odd segment
+    cmp rcx, r12
+    jae .plain
+    movzx eax, byte [r15 + rcx]
+    cmp al, '%'
+    je .odd
+    cmp al, ':'
+    je .odd
+    inc rcx
+    jmp .pc
+.odd:
+    and r14d, 2
+    mov rdi, rbx
+    lea rsi, [rel c_xseg]
+    mov edx, 2
+    call fnv_bytes
+    mov rbx, rax
+    jmp .seg
+.plain:
+    mov rdi, rbx
+    mov rsi, r15
+    mov rdx, r12
+    call fnv_bytes
+    mov rbx, rax
+    and r14d, 2
+    test r14d, 2
+    jnz .seg
+    mov rdi, r15
+    mov rsi, r12
+    lea rdx, [rel w_channels]
+    call seg_eq
+    test eax, eax
+    jnz .major
+    mov rdi, r15
+    mov rsi, r12
+    lea rdx, [rel w_guilds]
+    call seg_eq
+    test eax, eax
+    jnz .major
+    mov rdi, r15
+    mov rsi, r12
+    lea rdx, [rel w_webhooks]
+    call seg_eq
+    test eax, eax
+    jz .seg
+    or r14d, 8
+.major:
+    or r14d, 1
+    jmp .seg
+.end:
+    mov rax, rbx
+    or rax, 1                       ; never 0
+    LEAVE_RET
+.bypass:
+    xor eax, eax
+    LEAVE_RET
+
+; struct rl { long remaining (-1 unknown); long reset_after_ms (-1 unknown); long global; long shared }
+%define RL_REM    0
+%define RL_RESET  8
+%define RL_GLOBAL 16
+%define RL_SHARED 24
+
+; const char *hdr_val(const char *line, size_t n, const char *lowercase_prefix)
+; value start (spaces skipped) in rax and its length in rdx, or rax = 0 when the line is another header
+hdr_val:
+    xor ecx, ecx
+.l:
+    movzx eax, byte [rdx + rcx]
+    test al, al
+    jz .m
+    cmp rcx, rsi
+    jae .no
+    movzx r8d, byte [rdi + rcx]
+    LOWER r8d, r9d
+    cmp r8b, al
+    jne .no
+    inc rcx
+    jmp .l
+.m:
+    add rdi, rcx
+    sub rsi, rcx
+.s:
+    test rsi, rsi
+    jz .e
+    movzx eax, byte [rdi]
+    cmp al, ' '
+    je .adv
+    cmp al, 9
+    jne .e
+.adv:
+    inc rdi
+    dec rsi
+    jmp .s
+.e:
+    mov rax, rdi
+    mov rdx, rsi
+    ret
+.no:
+    xor eax, eax
+    ret
+
+; size_t header_cb(char *buffer, size_t size, size_t nitems, void *userdata)   libcurl header callback
+header_cb:
+    ENTER 0
+    mov r12, rdi
+    mov rax, rsi
+    imul rax, rdx
+    mov r13, rax                    ; n
+    mov r14, rcx                    ; struct rl *
+    mov rdi, r12
+    mov rsi, r13
+    lea rdx, [rel h_remaining]
+    call hdr_val
+    test rax, rax
+    jz .t2
+    mov rdi, rax
+    mov rsi, rdx
+    call parse_u64
+    test rdx, rdx
+    jz .t2
+    mov [r14 + RL_REM], rax
+    jmp .done
+.t2:
+    mov rdi, r12
+    mov rsi, r13
+    lea rdx, [rel h_resetafter]
+    call hdr_val
+    test rax, rax
+    jz .t3
+    mov rdi, rax
+    mov rsi, rdx
+    call parse_retry_ms
+    mov [r14 + RL_RESET], rax
+    jmp .done
+.t3:
+    mov rdi, r12
+    mov rsi, r13
+    lea rdx, [rel h_global]
+    call hdr_val
+    test rax, rax
+    jz .done
+    cmp byte [rax], 't'
+    jne .done
+    mov qword [r14 + RL_GLOBAL], 1
+.done:
+    mov rax, r13
+    LEAVE_RET
+
+; long *rl_slot(unsigned long hash, long create, unsigned long now)   caller holds rl_mutex
+rl_slot:
+    mov rax, rdi
+    and eax, RL_SLOTS - 1
+    lea r8, [rel rl_tab]
+    mov r9, rax
+    mov ecx, 4
+.p:
+    imul r10, r9, 24
+    add r10, r8
+    cmp [r10], rdi
+    je .found
+    inc r9
+    and r9, RL_SLOTS - 1
+    dec ecx
+    jnz .p
+    test rsi, rsi
+    jz .none
+    mov r9, rax                     ; claim an empty or expired slot among the 4 probes
+    mov ecx, 4
+.c:
+    imul r10, r9, 24
+    add r10, r8
+    cmp qword [r10], 0
+    je .claim
+    cmp [r10 + 16], rdx
+    jb .claim
+    inc r9
+    and r9, RL_SLOTS - 1
+    dec ecx
+    jnz .c
+    imul r10, rax, 24               ; all busy: take over the first probe
+    add r10, r8
+.claim:
+    mov [r10], rdi
+    mov qword [r10 + 8], -1
+    mov qword [r10 + 16], 0
+.found:
+    mov rax, r10
+    ret
+.none:
+    xor eax, eax
+    ret
+
+; void rl_wait(unsigned long hash)   returns when the route's bucket (and the global one) allow a request
+rl_wait:
+    ENTER 0
+    mov r12, rdi
+    test r12, r12
+    jz .ret
+    mov r13d, 8
+.l:
+    call now_ms
+    mov r14, rax
+    lea rdi, [rel rl_mutex]
+    CALLC pthread_mutex_lock
+    xor r15d, r15d                  ; ms to wait
+    mov rax, [rel rl_global_until]
+    sub rax, r14
+    jbe .g
+    mov r15, rax
+.g:
+    mov rdi, r12
+    xor esi, esi
+    mov rdx, r14
+    call rl_slot
+    test rax, rax
+    jz .unl
+    mov rcx, [rax + 16]
+    cmp rcx, r14
+    jbe .reset
+    mov rdx, [rax + 8]
+    test rdx, rdx
+    jg .take
+    jl .unl                         ; unknown: let it through
+    sub rcx, r14                    ; empty bucket: wait for the reset
+    cmp rcx, r15
+    cmovg r15, rcx
+    jmp .unl
+.take:
+    dec qword [rax + 8]
+    jmp .unl
+.reset:
+    mov qword [rax + 8], -1
+.unl:
+    lea rdi, [rel rl_mutex]
+    CALLC pthread_mutex_unlock
+    test r15, r15
+    jz .ret
+    cmp r15, 10000
+    jbe .s
+    mov r15d, 10000
+.s:
+    mov edi, r15d
+    call sleep_ms
+    dec r13d
+    jnz .l
+.ret:
+    LEAVE_RET
+
+; void rl_set(unsigned long hash, long remaining, long ms, long global)
+; remaining requests left, bucket resets in ms (global: pause every route for ms)
+rl_set:
+    ENTER 0
+    mov r12, rdi
+    mov r13, rsi
+    mov r14, rdx
+    mov r15, rcx
+    call now_ms
+    mov rbx, rax
+    lea rdi, [rel rl_mutex]
+    CALLC pthread_mutex_lock
+    mov rdi, r12
+    mov esi, 1
+    mov rdx, rbx
+    call rl_slot
+    mov [rax + 8], r13
+    lea rcx, [rbx + r14]
+    mov [rax + 16], rcx
+    test r15, r15
+    jz .u
+    lea rcx, [rbx + r14]
+    mov [rel rl_global_until], rcx
+.u:
+    lea rdi, [rel rl_mutex]
+    CALLC pthread_mutex_unlock
+    LEAVE_RET
+
 ; long rest_do(CURL *h, long method, const char *path, const char *body, size_t blen, sbuf *resp)
 ; returns the HTTP status (0 when the transfer itself failed). One retry after a 429.
 %define D_URL   0
-%define D_HTTP  24
-%define D_JV    104
-%define D_RESP  128
+%define D_HTTP  24                  ; struct req, 96 bytes
+%define D_RL    120                 ; struct rl, 32 bytes
+%define D_JV    152
+%define D_RESP  176
+%define D_HASH  184
+%define D_MS    192
 rest_do:
-    ENTER 160
+    ENTER 208
     mov r12, rdi
     mov r13, rsi
     mov r14, rdx
@@ -98,8 +534,18 @@ rest_do:
     lea rdi, [rsp + D_URL]
     mov rsi, r14
     call sb_appends
+    mov rdi, r13
+    mov rsi, r14
+    call rl_hash
+    mov [rsp + D_HASH], rax
     xor r14d, r14d                  ; attempt counter
 .again:
+    mov rdi, [rsp + D_HASH]
+    call rl_wait
+    mov qword [rsp + D_RL + RL_REM], -1
+    mov qword [rsp + D_RL + RL_RESET], -1
+    mov qword [rsp + D_RL + RL_GLOBAL], 0
+    mov qword [rsp + D_RL + RL_SHARED], 0
     mov [rsp + D_HTTP + 0], r12
     mov [rsp + D_HTTP + 8], r13
     mov rax, [rsp + D_URL + SB_DATA]
@@ -114,13 +560,17 @@ rest_do:
     mov [rsp + D_HTTP + 56], rax
     mov qword [rsp + D_HTTP + 64], 0
     mov qword [rsp + D_HTTP + 72], 20
+    lea rax, [rel header_cb]
+    mov [rsp + D_HTTP + 80], rax
+    lea rax, [rsp + D_RL]
+    mov [rsp + D_HTTP + 88], rax
     lea rdi, [rsp + D_HTTP]
     call http_do
     test eax, eax
     jnz .netfail
     mov rax, [rsp + D_HTTP + 64]
     cmp rax, 429
-    jne .out
+    jne .okresp
     test r14d, r14d
     jnz .out
     inc r14d
@@ -146,17 +596,38 @@ rest_do:
     jbe .sleep
     mov ecx, 10000
 .sleep:
-    mov edi, ecx
+    mov [rsp + D_MS], rcx
+    mov rdi, [rsp + D_HASH]
+    test rdi, rdi
+    jz .dosleep
+    xor esi, esi                    ; bucket empty until the retry time; a global 429 pauses everything
+    mov rdx, rcx
+    mov rcx, [rsp + D_RL + RL_GLOBAL]
+    call rl_set
+.dosleep:
+    mov rdi, [rsp + D_MS]
     call sleep_ms
     mov rax, [rsp + D_RESP]
     mov rdi, rax
     call sb_reset
     jmp .again
-.netfail:
-    xor eax, eax
-    jmp .free
+.okresp:
+    mov rdi, [rsp + D_HASH]
+    test rdi, rdi
+    jz .out
+    mov rsi, [rsp + D_RL + RL_REM]
+    test rsi, rsi
+    js .out
+    mov rdx, [rsp + D_RL + RL_RESET]
+    test rdx, rdx
+    js .out
+    xor ecx, ecx
+    call rl_set
 .out:
     mov rax, [rsp + D_HTTP + 64]
+    jmp .free
+.netfail:
+    xor eax, eax
 .free:
     mov r12, rax
     lea rdi, [rsp + D_URL]

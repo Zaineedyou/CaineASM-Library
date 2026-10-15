@@ -96,6 +96,19 @@ void casm_set_gateway_url(const char *url);     /* default wss://gateway.discord
 void casm_set_user_agent(const char *ua);       /* must look like "DiscordBot (url, version)" */
 void casm_set_ca_file(const char *path);        /* custom CA bundle (tests, odd systems) */
 void casm_set_quiet(int quiet);                 /* 1 = no log lines on stderr */
+/* Bot status and activity. Any thread, before or after casm_run starts; the latest call wins and
+ * goes out within about a second (Discord allows 5 updates per 20 s, so updates are spaced >= 4 s).
+ * status: "online" (NULL = online), "idle", "dnd", "invisible", "offline".
+ * activity_type: CASM_ACTIVITY_*; text is the activity name (for CASM_ACTIVITY_CUSTOM the status
+ * line), url only matters for streaming. Returns 0, or -1 for an unknown status / type or a missing text. */
+#define CASM_ACTIVITY_NONE      (-1)
+#define CASM_ACTIVITY_PLAYING     0
+#define CASM_ACTIVITY_STREAMING   1
+#define CASM_ACTIVITY_LISTENING   2
+#define CASM_ACTIVITY_WATCHING    3
+#define CASM_ACTIVITY_CUSTOM      4
+#define CASM_ACTIVITY_COMPETING   5
+int  casm_set_presence(const char *status, int activity_type, const char *text, const char *url);
 /* 1 = on SIGSEGV/SIGBUS/SIGFPE/SIGILL/SIGABRT print the signal, fault address, instruction
  * pointer and a backtrace to stderr, then die as usual (core dump included); 0 = restore the
  * default actions. Call it from the thread that runs casm_run (the alternate signal stack is

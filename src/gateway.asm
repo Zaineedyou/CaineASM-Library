@@ -11,6 +11,7 @@ extern json_get, json_path, json_true
 extern ws_connect, ws_close, ws_poll_message, ws_send_text, ws_send_close, ws_msg, ws_close_code
 extern g_cb_event, g_cb_event_user, g_cb_msg, g_cb_msg_user, g_intents
 extern g_app_id, g_cb_inter, g_cb_inter_user
+extern pres_append_identify, pres_tick
 extern now_ms, sleep_ms, ieq, parse_u64, c_strlen, log_line, log_sb
 extern g_discord_token, g_gateway_url, g_bot_id, g_stop
 
@@ -193,6 +194,8 @@ send_login:
     mov rdi, rbx
     mov rsi, [rel g_intents]
     call sb_append_u64
+    mov rdi, rbx
+    call pres_append_identify
     mov rdi, rbx
     lea rsi, [rel j_id3]
     call sb_appends
@@ -745,6 +748,10 @@ gw_session:
     jne .stop
     call now_ms
     mov r13, rax
+    mov rdi, r13
+    call pres_tick                  ; pending presence update from casm_set_presence
+    test eax, eax
+    jnz .lost
     cmp r13, [rel g_next_hb]
     jl .wait
     ; time for a heartbeat; no ACK for the previous one => zombie connection

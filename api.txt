@@ -76,3 +76,4 @@ casm_select_values
 casm_modal_value
 casm_option_focused
 casm_set_crash_handler
+casm_set_presence

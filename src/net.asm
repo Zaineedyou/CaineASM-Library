@@ -141,7 +141,8 @@ write_cb:
 ; struct req {                      one HTTPS request
 ;   0 CURL *h; 8 method (0 GET, 1 POST, 2 PUT, 3 PATCH, 4 DELETE); 16 url; 24 curl_slist *hdrs;
 ;   32 user-agent; 40 body; 48 body_len; 56 sbuf *resp;
-;   64 long status (out); 72 timeout seconds }
+;   64 long status (out); 72 timeout seconds;
+;   80 header callback (or 0); 88 its userdata }
 ; int http_do(req *r)  -> CURLcode (0 = transport ok)
 ; ---------------------------------------------------------------------
 global http_do
@@ -157,6 +158,12 @@ http_do:
     SETOPT CURLOPT_NOSIGNAL, 1
     SETOPT_SYM CURLOPT_WRITEFUNCTION, write_cb
     SETOPT CURLOPT_WRITEDATA, [rbx + 56]
+    mov rax, [rbx + 80]
+    test rax, rax
+    jz .nohdr
+    SETOPT CURLOPT_HEADERFUNCTION, rax
+    SETOPT CURLOPT_HEADERDATA, [rbx + 88]
+.nohdr:
     SETOPT CURLOPT_TIMEOUT, [rbx + 72]
     SETOPT CURLOPT_CONNECTTIMEOUT, 10
     mov rax, [rel g_ca_file]

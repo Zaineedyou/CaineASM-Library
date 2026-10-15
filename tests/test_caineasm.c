@@ -57,10 +57,16 @@ static void on_message(const casm_message *m, void *u) {
     } else if (starts(m, "!typing")) {
         printf("RET typing %ld\n", casm_typing(chan));
     } else if (starts(m, "!edit")) {
+        printf("RET pres %d\n", casm_set_presence("idle", CASM_ACTIVITY_CUSTOM, "custom text \xC3\xA9", NULL));
+        printf("RET presbad1 %d\n", casm_set_presence("banana", 0, "x", NULL));
+        printf("RET presbad2 %d\n", casm_set_presence("online", 9, "x", NULL));
+        printf("RET presbad3 %d\n", casm_set_presence("online", 0, NULL, NULL));
+        printf("RET presbad4 %d\n", casm_set_presence("online", -2, "x", NULL));
         printf("RET edit %ld\n", casm_edit(chan, "5000", "edited \"x\"", 10));
     } else if (starts(m, "!del")) {
         printf("RET del %ld\n", casm_delete(chan, "5000"));
     } else if (starts(m, "!react")) {
+        printf("RET pres2 %d\n", casm_set_presence(NULL, CASM_ACTIVITY_STREAMING, "stream", "https://t.tv/x"));
         printf("RET react %ld\n", casm_react(chan, id, "%F0%9F%91%8D"));
     } else if (starts(m, "!long")) {
         char *buf = malloc(6000); size_t n = 0;
@@ -399,6 +405,27 @@ int main(int argc, char **argv) {
     casm_set_gateway_url(gw);
     casm_set_ca_file(argv[3]);
     if (casm_init("tok.en", CASM_INTENTS_DEFAULT) != 0) { puts("INIT failed"); return 1; }
+    if (strcmp(argv[1], "rl") == 0) {               /* per-route rate limiting against the bucket mock */
+        struct timespec a, b;
+        clock_gettime(CLOCK_MONOTONIC, &a);
+        long st[8]; int k = 0;
+        st[k++] = casm_send("1001", "a1", 2, NULL); st[k++] = casm_send("1001", "a2", 2, NULL);
+        st[k++] = casm_send("1002", "b1", 2, NULL); st[k++] = casm_send("1002", "b2", 2, NULL);
+        clock_gettime(CLOCK_MONOTONIC, &b);
+        printf("RL phase1 %ld\n", (b.tv_sec - a.tv_sec) * 1000 + (b.tv_nsec - a.tv_nsec) / 1000000);
+        for (int i = 0; i < 4; i++) st[k++] = casm_send("1001", "c", 1, NULL);
+        clock_gettime(CLOCK_MONOTONIC, &b);
+        printf("RL total %ld\n", (b.tv_sec - a.tv_sec) * 1000 + (b.tv_nsec - a.tv_nsec) / 1000000);
+        int ok = 0;
+        for (int i = 0; i < k; i++) ok += st[i] == 200;
+        printf("RL ok %d of %d\n", ok, k);
+        clock_gettime(CLOCK_MONOTONIC, &a);
+        long g = casm_send("1002", "GLOBAL", 6, NULL);
+        clock_gettime(CLOCK_MONOTONIC, &b);
+        printf("RL global %ld %ld\n", g, (b.tv_sec - a.tv_sec) * 1000 + (b.tv_nsec - a.tv_nsec) / 1000000);
+        casm_cleanup();
+        return 0;
+    }
     if (strcmp(argv[1], "threads") == 0) {      /* REST only, 8 threads x 10 messages */
         pthread_t t[8];
         for (long i = 0; i < 8; i++) pthread_create(&t[i], NULL, thr, (void *)(size_t)i);
@@ -419,6 +446,7 @@ int main(int argc, char **argv) {
     casm_on_event(on_event, NULL);
     if (strcmp(argv[1], "inter") == 0) casm_on_interaction(on_interaction, NULL);
     else casm_on_message(on_message, NULL);
+    if (strcmp(argv[1], "main") == 0) casm_set_presence("dnd", CASM_ACTIVITY_WATCHING, "uptime \"x\"", NULL);
     int r = casm_run();
     printf("RUN %d\n", r);
     return 0;

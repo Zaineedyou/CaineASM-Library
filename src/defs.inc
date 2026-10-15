@@ -9,6 +9,8 @@ default rel
 
 ; ---- libcurl constants (checked against curl 8.5.0 include/curl/curl.h) ----
 %define CURLOPT_WRITEDATA        10001
+%define CURLOPT_HEADERDATA       10029
+%define CURLOPT_HEADERFUNCTION   20079
 %define CURLOPT_URL              10002
 %define CURLOPT_ERRORBUFFER      10010
 %define CURLOPT_WRITEFUNCTION    20011

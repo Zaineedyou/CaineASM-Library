@@ -171,6 +171,20 @@ check('SELV 1\n' in o and 'SELV0 115 a\n' in o and 'SELV1 115 b\n' in o and 'SEL
 check('FOCUS 1 q he\n' in o, 'focused option found inside a subcommand')
 check(len(ir) == len(want) + len(ui), f'exactly {len(want) + len(ui)} interaction REST calls, invalid ones never reached the network (saw {len(ir)})')
 
+# ------------------------------------------------------------ per-route rate limiting
+m = Mock('ratelimit', certdir)
+p = run('rl', m, 120)
+check(p.returncode == 0, f'rl exit {p.returncode} {p.stderr[-300:]}')
+mm = re.search(r'RL phase1 (\d+)', p.stdout); phase1 = int(mm.group(1)) if mm else -1
+mm = re.search(r'RL total (\d+)', p.stdout); total = int(mm.group(1)) if mm else -1
+mm = re.search(r'RL global (\d+) (\d+)', p.stdout)
+check(sum(1 for k, d in m.log if k == 'rl_violation') == 0, 'no request was sent on an empty bucket (the mock never answered 429 for a bucket)')
+check('RL ok 8 of 8' in p.stdout, f'all 8 sends returned 200: {p.stdout!r}')
+check(0 <= phase1 < (3000 if os.environ.get('VALGRIND') else 500), f'two channels have separate buckets, nothing waited (phase1 {phase1} ms)')
+check(2600 <= total <= 5000, f'4 more sends on the exhausted channel waited for the bucket resets (total {total} ms)')
+check(mm is not None and mm.group(1) == '200' and 500 <= int(mm.group(2)) <= 2500, f'global 429 retried after retry_after: {mm and mm.groups()}')
+check(sum(1 for k, d in m.log if k == 'rest' and 'GLOBAL' in d['body']) == 2, 'the global 429 request was sent exactly twice')
+
 # ------------------------------------------------------------ REST from many threads
 m = Mock('main', certdir)
 p = run('threads', m, 120)
@@ -226,6 +240,18 @@ if len(logins) == 3:
     check(r2['op'] == 6 and r2['d']['session_id'] == 'SESS1' and r2['d']['token'] == 'tok.en', f'resume payload {r2}')
     check(r2['d']['seq'] == seq, f'resume seq {r2["d"]["seq"]} == {seq}')
     check(i3['op'] == 2, 'identify again after invalid session (d=false)')
+PA = {'since': None, 'activities': [{'name': 'Custom Status', 'type': 4, 'state': 'custom text \u00e9'}], 'status': 'idle', 'afk': False}
+PB = {'since': None, 'activities': [{'name': 'stream', 'type': 1, 'url': 'https://t.tv/x'}], 'status': 'online', 'afk': False}
+if len(logins) == 3:
+    check(logins[0]['d'].get('presence') == {'since': None, 'activities': [{'name': 'uptime "x"', 'type': 3}], 'status': 'dnd', 'afk': False},
+          f'Identify carries the presence set before casm_run: {logins[0]["d"].get("presence")}')
+    check('presence' not in logins[1]['d'], 'Resume has no presence')
+    check(logins[2]['d'].get('presence') == PB, f'the second Identify carries the latest presence: {logins[2]["d"].get("presence")}')
+pres = [d for k, d in log if k == 'presence']
+check([d['d'] for d in pres] == [PA, PB], f'Update Presence (op 3) payloads: {[d["d"] for d in pres]}')
+check(len(pres) == 2 and pres[1]['ts'] - pres[0]['ts'] >= 3.8, 'presence updates are at least 4 s apart (5 per 20 s limit)')
+for k, v in [('pres', 0), ('pres2', 0), ('presbad1', -1), ('presbad2', -1), ('presbad3', -1), ('presbad4', -1)]:
+    check(f'RET {k} {v}\n' in out, f'RET {k} {v}')
 check(any(d['n'] == 2 and '/?v=10&encoding=json' in d['request_line'] for k, d in log if k == 'ws_open'),
       'resume connects to resume_gateway_url with ?v=10&encoding=json')
 check(any(k == 'heartbeat' for k, d in log), 'heartbeats were sent')

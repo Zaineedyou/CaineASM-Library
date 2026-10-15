@@ -1,5 +1,5 @@
 """Local TLS mock of the Discord gateway + REST, used by run_test.py."""
-import base64, hashlib, json, os, socket, ssl, struct, threading, time
+import re, base64, hashlib, json, os, socket, ssl, struct, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
@@ -59,6 +59,8 @@ class Mock:
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(('127.0.0.1', 0))
         self.sock.listen(50)
+        self.rl = {}
+        self.global_done = False
         self.port = self.sock.getsockname()[1]
         threading.Thread(target=self._accept, daemon=True).start()
 
@@ -110,8 +112,33 @@ class Mock:
             while len(rest) < n:
                 rest += c.recv(65536)
             body, buf = rest[:n], rest[n:]
-            status, out = 200, b'{}'
-            self.ev('rest', {'method': meth, 'path': path, 'headers': hd, 'body': body.decode('utf-8', 'replace'), 'conn': conn_id})
+            status, out, extra = 200, b'{}', ''
+            self.ev('rest', {'method': meth, 'path': path, 'headers': hd, 'body': body.decode('utf-8', 'replace'), 'conn': conn_id, 'ts': time.time()})
+            m_rl = re.fullmatch(r'/api/v10/channels/(\d+)/messages', path)
+            if self.mode == 'ratelimit' and meth == 'POST' and m_rl:
+                # Discord-style bucket: 2 requests per 1.5 s per channel, headers on every answer
+                now = time.time()
+                b = self.rl.setdefault(m_rl.group(1), {'rem': 2, 'reset': 0.0})
+                if b'GLOBAL' in body and not self.global_done:
+                    self.global_done = True
+                    status, out = 429, b'{"message":"You are being rate limited.","retry_after":0.6,"global":true}'
+                    extra = 'X-RateLimit-Global: true\r\nX-RateLimit-Scope: global\r\n'
+                else:
+                    if now >= b['reset']:
+                        b['rem'], b['reset'] = 2, now + 1.5
+                    if b['rem'] == 0:
+                        self.ev('rl_violation', {'chan': m_rl.group(1)})
+                        status, out = 429, b'{"message":"You are being rate limited.","retry_after":1.0,"global":false}'
+                        extra = 'Retry-After: 1\r\nX-RateLimit-Scope: user\r\n'
+                    else:
+                        b['rem'] -= 1
+                        out = b'{"id":"5000"}'
+                        extra = ('X-RateLimit-Limit: 2\r\nX-Ratelimit-Remaining: %d\r\nX-RateLimit-Reset-After: %.3f\r\n'
+                                 'X-RateLimit-Bucket: abc\r\n' % (b['rem'], max(0.0, b['reset'] - now)))
+                c.sendall((f"HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n{extra}"
+                           f"Content-Length: {len(out)}\r\n\r\n").encode() + out)
+                served += 1
+                continue
             if meth == 'POST' and path.endswith('/messages') and b'429TEST' in body and not self.rate_done:
                 self.rate_done = True
                 status, out = 429, b'{"message":"You are being rate limited.","retry_after":0.3,"global":false}'
@@ -213,6 +240,8 @@ class Mock:
                         if j['op'] in (2, 6):
                             self.ev('login', {'n': n, 'op': j['op'], 'd': j['d']})
                             login.set()
+                        elif j['op'] == 3:
+                            self.ev('presence', {'n': n, 'd': j['d'], 'ts': time.time()})
                         elif j['op'] == 1:
                             self.ev('heartbeat', {'n': n, 'd': j['d']})
                             c.sendall(frame(1, b'{"op":11}'))
