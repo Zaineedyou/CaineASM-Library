@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Runs the C test client against the mock Discord and verifies everything.
 usage: run_test.py <test binary>      (VALGRIND=1 to run under valgrind)"""
-import json, os, re, subprocess, sys, tempfile
+import json, os, re, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -44,6 +44,10 @@ for mode in ('crash', 'crashstack'):
     check('HANDLER 0' in p.stdout, f'{mode}: casm_set_crash_handler(1) returned 0')
     check('CaineASM crash: SIGSEGV' in p.stderr and 'fault address 0x' in p.stderr and 'instruction 0x' in p.stderr, f'{mode}: header on stderr: {p.stderr[:200]!r}')
     check('backtrace' in p.stderr and p.stderr.count('[0x') >= (2 if mode == 'crash' else 1), f'{mode}: backtrace lines: {p.stderr[-300:]!r}')
+    if shutil.which('addr2line'):
+        check('resolved (addr2line):' in p.stderr, f'{mode}: addr2line output present: {p.stderr[-300:]!r}')
+        if mode == 'crash':
+            check('ix_path' in p.stderr and 'ix_send' in p.stderr and 'interact.asm' in p.stderr, f'{mode}: names and source lines resolved: {p.stderr[-500:]!r}')
 p = subprocess.run([binary, 'crash'], capture_output=True, text=True, timeout=60)
 check('fault address 0x28,' in p.stderr, f'fault address of the garbage pointer is reported: {p.stderr[:160]!r}')
 p = subprocess.run([binary, 'crashoff'], capture_output=True, text=True, timeout=60)

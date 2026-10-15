@@ -94,7 +94,7 @@ Panggil `casm_set_crash_handler(1)` di thread yang menjalankan `casm_run` (stack
 backtrace (addr2line -f -e <binary> <+offset>):
 ./app(+0x9ae1)[0x557b10580ae1]
 ```
-Ubah offset jadi nama fungsi dan baris: `addr2line -f -e ./app +0x9ae1` (binary harus punya info debug, bangun dengan `-g`). Backtrace mengikuti rantai `rbp`, jadi kode tanpa frame pointer (libc, libcurl, C dengan `-O2`) bisa tidak muncul. Alternatif tanpa handler: `gdb -batch -ex run -ex bt ./app` atau `valgrind ./app`.
+Kalau `addr2line` (paket binutils) terpasang, handler langsung mencetak nama fungsi dan baris untuk frame di dalam binary kamu (bangun dengan `-g`), misalnya `ix_path at src/interact.asm:124`. Tanpa `addr2line`, jalankan sendiri: `addr2line -f -e ./app +0x9ae1`. Backtrace mengikuti rantai `rbp`, jadi kode tanpa frame pointer (libc, libcurl, C dengan `-O2`) bisa tidak muncul. Alternatif tanpa handler: `gdb -batch -ex run -ex bt ./app` atau `valgrind ./app`.
 
 ## Batasan v0.1
 - **Satu client per proses** (state global).

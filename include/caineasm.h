@@ -100,8 +100,10 @@ void casm_set_quiet(int quiet);                 /* 1 = no log lines on stderr */
  * pointer and a backtrace to stderr, then die as usual (core dump included); 0 = restore the
  * default actions. Call it from the thread that runs casm_run (the alternate signal stack is
  * per thread, so stack overflows get reported too). Frames follow the rbp chain, so frames of
- * code built without frame pointers (libc, libcurl, -O2 C) can be missing. Turn an offset into
- * a function with: addr2line -f -e <binary> <+offset>. Returns 0, or -1 when a call failed. */
+ * code built without frame pointers (libc, libcurl, -O2 C) can be missing. When `addr2line`
+ * (binutils) is installed the handler also prints function names and source lines for the
+ * frames inside your executable (build it with -g); without it, run
+ * addr2line -f -e <binary> <+offset> yourself. Returns 0, or -1 when a call failed. */
 int  casm_set_crash_handler(int enable);
 
 void casm_on_message(casm_message_cb cb, void *user);
