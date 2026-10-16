@@ -291,6 +291,72 @@ long casm_followup_reply(const casm_interaction *i, casm_reply *r);       /* 200
 long casm_edit_response_reply(const casm_interaction *i, casm_reply *r);  /* 200 */
 long casm_show_modal(const casm_interaction *i, casm_modal *m);           /* 204; not allowed as an answer to a modal */
 
+/* ---- command builder ----
+ * Builds application commands so the JSON does not have to be written by hand
+ * (shapes and limits from the Discord docs). Constructors return NULL and setters
+ * -1 when a rule is broken, before anything is sent: names 1-32 characters,
+ * lowercase [-_a-z0-9] (or non-ASCII), descriptions 1-100, at most 25 options /
+ * choices per list, required options before optional ones, choices only on
+ * STRING / INTEGER / NUMBER options (value type must match), no choices together
+ * with autocomplete, integers within +-(2^53-1).
+ * Free handles with casm_builder_free; adding an option COPIES it, so add an
+ * option's own choices / sub-options first and the option to its parent afterwards.
+ * Discord still checks the rest (e.g. no top-level options next to sub-commands). */
+typedef struct casm_cmd casm_cmd;
+typedef struct casm_opt casm_opt;
+#define CASM_OPT_SUB_COMMAND        1
+#define CASM_OPT_SUB_COMMAND_GROUP  2
+#define CASM_OPT_STRING             3
+#define CASM_OPT_INTEGER            4
+#define CASM_OPT_BOOLEAN            5
+#define CASM_OPT_USER               6
+#define CASM_OPT_CHANNEL            7
+#define CASM_OPT_ROLE               8
+#define CASM_OPT_MENTIONABLE        9
+#define CASM_OPT_NUMBER            10
+#define CASM_OPT_ATTACHMENT        11
+#define CASM_CTX_GUILD              1   /* casm_cmd_contexts mask bits */
+#define CASM_CTX_BOT_DM             2
+#define CASM_CTX_PRIVATE_CHANNEL    4
+
+casm_cmd *casm_cmd_new(const char *name, const char *description);      /* slash command */
+casm_cmd *casm_cmd_new_context(const char *name, int type);             /* 2 = user menu, 3 = message menu */
+int casm_cmd_option(casm_cmd *c, casm_opt *o);                          /* slash commands only */
+int casm_cmd_permissions(casm_cmd *c, const char *permission_bits);     /* decimal string, "0" = admins only */
+int casm_cmd_nsfw(casm_cmd *c);
+int casm_cmd_contexts(casm_cmd *c, int mask);                           /* CASM_CTX_* (global commands) */
+
+casm_opt *casm_opt_new(int type, const char *name, const char *description, int required);
+int casm_opt_choice(casm_opt *o, const char *name, const char *value);  /* STRING, value 0-100 chars */
+int casm_opt_choice_int(casm_opt *o, const char *name, long value);     /* INTEGER */
+int casm_opt_choice_num(casm_opt *o, const char *name, double value);   /* NUMBER (finite) */
+int casm_opt_range_int(casm_opt *o, long min, long max);                /* INTEGER; LONG_MIN / LONG_MAX = unset */
+int casm_opt_range_num(casm_opt *o, double min, double max);            /* NUMBER; +-INFINITY = unset */
+int casm_opt_length(casm_opt *o, long min, long max);                   /* STRING; negative = unset (max 1-6000) */
+int casm_opt_autocomplete(casm_opt *o);                                 /* answer with casm_autocomplete */
+int casm_opt_add(casm_opt *parent, casm_opt *child);                    /* sub-command <- option, group <- sub-command */
+
+/* Register built commands (bulk overwrite, up to 100): same return values as
+ * casm_register_commands / casm_register_guild_commands. */
+long casm_register_cmds(casm_cmd *const *cmds, int n);
+long casm_register_guild_cmds(const char *guild_id, casm_cmd *const *cmds, int n);
+
+/* ---- file attachments (multipart/form-data) ----
+ * casm_reply_file copies the bytes into the reply; casm_send_reply, casm_edit_message
+ * (the new files replace the old attachments), casm_followup_reply and
+ * casm_edit_response_reply then upload them. casm_respond_reply / casm_update_reply
+ * (callback types 4 / 7) cannot carry files and return -1: casm_defer first, then
+ * casm_followup_reply. To show an uploaded image inside an embed use
+ * casm_embed_image(e, "attachment://<filename>"). filename: 1-255 bytes without
+ * control characters, '"', '\\' or '/'; content_type NULL = guessed from the extension
+ * (png jpg jpeg gif webp txt log csv json pdf mp3 mp4 zip, else application/octet-stream).
+ * At most 25 MiB per request; larger files return -1 before anything is sent. */
+int casm_reply_file(casm_reply *r, const char *filename, const void *data, size_t len,
+                    const char *content_type);
+/* One call: a message with one file and optional text (NULL = none). Like casm_send. */
+long casm_send_file(const char *channel_id, const char *filename, const void *data, size_t len,
+                    const char *content_type, const char *text);
+
 /* Autocomplete (interaction type 4): up to 25 string choices, arrays of n entries. */
 long casm_autocomplete(const casm_interaction *i, const char *const *names,
                        const char *const *values, size_t n);

@@ -93,7 +93,7 @@ check(p.returncode == 0 and 'RUN 0' in o, f'inter run: {o[-300:]!r} {e[-300:]}')
 ir = [d for k, d in m.log if k == 'rest']
 check(all(d['headers'].get('authorization') == 'Bot tok.en' for d in ir), 'interaction calls carry the bot Authorization header')
 ints = [l for l in o.split('\n') if l.startswith('INT ')]
-check(len(ints) == 12, f'12 parsed interactions ({len(ints)})')
+check(len(ints) == 14, f'14 parsed interactions ({len(ints)})')
 i1 = ints[0] if ints else ''
 for frag in ['id=3001', 'app=700', 'tok=tok_A-b.c1', 'guild=G1', 'chan=1001', 'uid=U1', 'uname=alice', 'cmd=ping',
              'cid=c1', 'custom=<null>', 'type=2 ctype=1 appid=700', '"name":"text","type":3,"value":"he said \\"hi\\" \u00e9\\n"']:
@@ -126,7 +126,7 @@ want = [
     ('PUT', '/api/v10/applications/700/guilds/555/commands', json.loads('[{"name":"ping","description":"Pong","type":1,"options":[{"name":"text","description":"t","type":3}]}]')),
 ]
 for meth, path, bd in want:
-    got = [d for d in ir if d['method'] == meth and d['path'] == path and (json.loads(d['body']) if d['body'] else None) == bd]
+    got = [d for d in ir if d['method'] == meth and d['path'] == path and not d['headers'].get('content-type', '').startswith('multipart/') and (json.loads(d['body']) if d['body'] else None) == bd]
     check(len(got) == 1, f'REST {meth} {path} body {bd}: matches {len(got)}')
 AM = {'parse': ['users']}
 EMB = {'title': 'Judul "q"', 'description': 'baris1\nbaris2 \u00e9', 'url': 'https://x/e', 'timestamp': '2026-10-13T11:00:00Z',
@@ -158,7 +158,7 @@ ui = [
         {'name': 'Alpha', 'value': 'a'}, {'name': 'Be"ta', 'value': 'b'}]}}),
 ]
 for meth, path, bd in ui:
-    got = [d for d in ir if d['method'] == meth and d['path'] == path and (json.loads(d['body']) if d['body'] else None) == bd]
+    got = [d for d in ir if d['method'] == meth and d['path'] == path and not d['headers'].get('content-type', '').startswith('multipart/') and (json.loads(d['body']) if d['body'] else None) == bd]
     check(len(got) == 1, f'UI {meth} {path} body {json.dumps(bd)[:90]}: matches {len(got)}')
 for k, v in [('panel', 204), ('sendreply', 200), ('sendreply2', 200), ('editmsg', 200), ('followreply', 200), ('editreply', 200),
              ('badr1', -1), ('badr2', -1), ('badr3', -1), ('bade1', -1), ('bade2', -1), ('bade3', -1), ('bade4', -1), ('bade5', -1),
@@ -169,7 +169,104 @@ check('MODAL name 115 Bud \\"i\\"\\n\n' in o and 'MODAL pick 97\n' in o and 'MOD
       'modal values: text, select values, missing')
 check('SELV 1\n' in o and 'SELV0 115 a\n' in o and 'SELV1 115 b\n' in o and 'SELV2 0 \n' in o, 'select values via casm_array_at')
 check('FOCUS 1 q he\n' in o, 'focused option found inside a subcommand')
-check(len(ir) == len(want) + len(ui), f'exactly {len(want) + len(ui)} interaction REST calls, invalid ones never reached the network (saw {len(ir)})')
+# ---- command builder: JSON compared with the shapes from the Discord docs
+HELLO = {'type': 1, 'name': 'hello', 'description': 'Say "hello" é', 'default_member_permissions': '8', 'nsfw': True,
+         'contexts': [0, 2], 'options': [
+    {'type': 3, 'name': 'who', 'description': 'Who', 'required': True,
+     'choices': [{'name': 'Alice', 'value': 'a'}, {'name': 'Bo"b', 'value': 'b'}]},
+    {'type': 4, 'name': 'count', 'description': 'How many', 'min_value': 1, 'max_value': 10},
+    {'type': 10, 'name': 'ratio', 'description': 'Ratio', 'min_value': 0.1, 'max_value': 99.5},
+    {'type': 3, 'name': 'q', 'description': 'Query', 'min_length': 2, 'max_length': 50, 'autocomplete': True},
+    {'type': 4, 'name': 'level', 'description': 'Level', 'choices': [{'name': 'Low', 'value': 1}, {'name': 'High', 'value': -5}]},
+    {'type': 10, 'name': 'pi', 'description': 'Pi', 'choices': [{'name': 'Pi', 'value': 3.14159}]},
+    {'type': 4, 'name': 'min', 'description': 'Min only', 'min_value': -3},
+    {'type': 10, 'name': 'big', 'description': 'Max only', 'max_value': 1e20}]}
+ADMIN = {'type': 1, 'name': 'admin', 'description': 'Admin tools', 'options': [
+    {'type': 2, 'name': 'ban', 'description': 'Ban tools', 'options': [
+        {'type': 1, 'name': 'user', 'description': 'Ban a user', 'options': [
+            {'type': 6, 'name': 'target', 'description': 'Target', 'required': True}]}]}]}
+CTXC = {'type': 2, 'name': 'Show Info', 'description': ''}
+for path in ('/api/v10/applications/700/commands', '/api/v10/applications/700/guilds/555/commands'):
+    got = [json.loads(d['body']) for d in ir if d['method'] == 'PUT' and d['path'] == path and d['body'].startswith('[{"type":1,"name":"hello"')]
+    check(got == [[HELLO, ADMIN, CTXC]], f'command builder PUT {path}: {json.dumps(got)[:300]}')
+for k, v in [('bok', '0'), ('breg', '200'), ('bregguild', '200'), ('b10', '0 -1'), ('b32', '-1 -1 -1'), ('b35', '25 2'), ('b36', '25 2')]:
+    check(f'RET {k} {v}\n' in o, f'RET {k} {v}')
+for k in list(range(1, 10)):
+    check(f'RET b{k} 1\n' in o, f'builder rule violation b{k} gives NULL')
+for k in list(range(11, 32)) + [33, 34]:
+    check(f'RET b{k} -1\n' in o, f'builder rule violation b{k} gives -1')
+
+# ---- file uploads: exact multipart structure from the Discord docs
+def mkdata(n):
+    b = bytearray((k * 7 + 3) & 255 for k in range(n))
+    if n > 30:
+        b[10:18] = b'\r\n--\r\n\r\n'
+    return bytes(b)
+
+def parse_mp(d):
+    ct = d['headers'].get('content-type', '')
+    mm = re.fullmatch(r'multipart/form-data; boundary=(CaineASM[0-9a-f]{32})', ct)
+    if not mm:
+        return None, None, f'bad content-type {ct!r}'
+    B = mm.group(1).encode()
+    raw = d['raw']
+    head, tail = b'--' + B + b'\r\n', b'\r\n--' + B + b'--\r\n'
+    if not (raw.startswith(head) and raw.endswith(tail)):
+        return None, None, 'bad framing'
+    parts = []
+    for part in raw[len(head):-len(tail)].split(b'\r\n--' + B + b'\r\n'):
+        h, sep, data = part.partition(b'\r\n\r\n')
+        parts.append((h.decode().split('\r\n'), data))
+    return B, parts, ''
+
+D1, D2 = mkdata(300), mkdata(1000000)
+AMU = {'parse': ['users']}
+cases = [
+    ('POST', '/api/v10/channels/1001/messages', {'content': 'caption "q" é', 'allowed_mentions': AMU,
+        'attachments': [{'id': 0, 'filename': 'cat.png'}]}, [('cat.png', 'image/png', D1)]),
+    ('POST', '/api/v10/channels/1001/messages', {'allowed_mentions': AMU, 'attachments': [{'id': 0, 'filename': 'report.txt'}]},
+        [('report.txt', 'text/plain', b'hello\n')]),
+    ('POST', '/api/v10/channels/1001/messages', {'allowed_mentions': AMU, 'attachments': [{'id': 0, 'filename': 'Big é.BIN'}]},
+        [('Big é.BIN', 'application/x-custom', D2)]),
+    ('POST', '/api/v10/channels/1001/messages', {'allowed_mentions': AMU, 'attachments': [{'id': 0, 'filename': 'empty.log'}]},
+        [('empty.log', 'text/plain', b'')]),
+]
+two = [('a.txt', 'text/plain', b'AAA'), ('b.jpeg', 'image/jpeg', D1)]
+TWO = {'content': 'two files', 'embeds': [{'title': 'T', 'image': {'url': 'attachment://a.txt'}}],
+       'attachments': [{'id': 0, 'filename': 'a.txt'}, {'id': 1, 'filename': 'b.jpeg'}]}
+cases += [
+    ('POST', '/api/v10/channels/1001/messages', dict(TWO, message_reference={'message_id': '2001', 'fail_if_not_exists': False},
+        allowed_mentions={'parse': ['users'], 'replied_user': True}), two),
+    ('PATCH', '/api/v10/channels/1001/messages/5000', dict(TWO, allowed_mentions=AMU), two),
+    ('POST', '/api/v10/webhooks/700/tok_U', dict(TWO, allowed_mentions=AMU), two),
+    ('PATCH', '/api/v10/webhooks/700/tok_U/messages/@original', dict(TWO, allowed_mentions=AMU), two),
+]
+mp = [d for d in ir if d['headers'].get('content-type', '').startswith('multipart/')]
+check(len(mp) == len(cases), f'{len(cases)} multipart requests (saw {len(mp)})')
+bounds = set()
+for n, (meth, path, js, files) in enumerate(cases):
+    d = mp[n] if n < len(mp) else None
+    if d is None:
+        check(False, f'upload case {n}: missing request')
+        continue
+    B, parts, err = parse_mp(d)
+    ok = (d['method'] == meth and d['path'] == path and parts is not None and len(parts) == 1 + len(files))
+    check(ok, f'upload case {n} {meth} {path}: method/path/framing {err or ""} {d["method"]} {d["path"]}')
+    if not ok:
+        continue
+    bounds.add(B)
+    check(parts[0][0] == ['Content-Disposition: form-data; name="payload_json"', 'Content-Type: application/json'], f'upload case {n}: payload_json part headers {parts[0][0]}')
+    check(json.loads(parts[0][1]) == js, f'upload case {n}: payload_json {parts[0][1][:300]!r}')
+    for fi, (fname, fct, fdata) in enumerate(files):
+        h, data = parts[1 + fi]
+        check(h == [f'Content-Disposition: form-data; name="files[{fi}]"; filename="{fname}"', f'Content-Type: {fct}'], f'upload case {n} file {fi}: headers {h}')
+        check(data == fdata, f'upload case {n} file {fi}: {len(data)} bytes equal {len(fdata)} bytes: {data == fdata}')
+check(len(bounds) == len(cases), f'every upload used its own random boundary ({len(bounds)} distinct)')
+for k, v in [('f1', 200), ('f2', 200), ('f3', 200), ('f4', 200), ('fadd', 0), ('fsend', 200), ('fedit', 200), ('ffollow', 200),
+             ('feditresp', 200), ('frespond', -1), ('fupdate', -1), ('fok', 0)] + [(f'fbad{x}', -1) for x in range(1, 15)]:
+    check(f'RET {k} {v}\n' in o, f'RET {k} {v}')
+
+check(len(ir) == len(want) + len(ui) + 2 + len(cases), f'exactly {len(want) + len(ui) + 2 + len(cases)} interaction REST calls, invalid ones never reached the network (saw {len(ir)})')
 
 # ------------------------------------------------------------ per-route rate limiting
 m = Mock('ratelimit', certdir)

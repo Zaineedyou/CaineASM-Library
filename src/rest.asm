@@ -8,7 +8,7 @@
 
 %define POOL_MAX 8
 
-extern free, pthread_mutex_lock, pthread_mutex_unlock
+extern free, pthread_mutex_lock, pthread_mutex_unlock, curl_slist_append, curl_slist_free_all
 extern now_ms
 extern sb_init, sb_free, sb_reset, sb_append, sb_appends, sb_append_json_esc
 extern json_get, parse_u64, sleep_ms, chunk_next, trim_span
@@ -518,8 +518,10 @@ rl_set:
 %define D_RESP  176
 %define D_HASH  184
 %define D_MS    192
+%define D_HDRS  200                 ; curl_slist* to send instead of the default JSON headers (0 = default)
 rest_do:
     ENTER 208
+    mov [rsp + D_HDRS], r10
     mov r12, rdi
     mov r13, rsi
     mov r14, rdx
@@ -550,7 +552,11 @@ rest_do:
     mov [rsp + D_HTTP + 8], r13
     mov rax, [rsp + D_URL + SB_DATA]
     mov [rsp + D_HTTP + 16], rax
+    mov rax, [rsp + D_HDRS]
+    test rax, rax
+    jnz .hdrs
     mov rax, [rel g_hdr_discord]
+.hdrs:
     mov [rsp + D_HTTP + 24], rax
     mov rax, [rel g_user_agent]
     mov [rsp + D_HTTP + 32], rax
@@ -559,7 +565,10 @@ rest_do:
     mov rax, [rsp + D_RESP]
     mov [rsp + D_HTTP + 56], rax
     mov qword [rsp + D_HTTP + 64], 0
-    mov qword [rsp + D_HTTP + 72], 20
+    mov rax, rbx                    ; transfer timeout: 20 s plus 1 s per 128 KiB of body (file uploads)
+    shr rax, 17
+    add rax, 20
+    mov [rsp + D_HTTP + 72], rax
     lea rax, [rel header_cb]
     mov [rsp + D_HTTP + 80], rax
     lea rax, [rsp + D_RL]
@@ -820,6 +829,7 @@ do_call:
     mov r8, [r14 + SB_LEN]
 .nb:
     lea r9, [rsp]
+    xor r10d, r10d
     call rest_do
     mov r12, rax
     mov rdi, [rsp + 24]
@@ -828,6 +838,70 @@ do_call:
     call sb_free
     mov rax, r12
     LEAVE_RET
+.fail:
+    xor eax, eax
+    LEAVE_RET
+
+; ---------------------------------------------------------------------
+; long do_call_mp(long method, sbuf *path, sbuf *body, const char *boundary)
+; like do_call, but with Content-Type: multipart/form-data; boundary=<boundary>
+; ---------------------------------------------------------------------
+section .rodata
+s_ct_mp:       db "Content-Type: multipart/form-data; boundary=", 0
+section .text
+global do_call_mp
+do_call_mp:
+    ENTER 80                        ; [0] resp sbuf, [24] handle, [32] slist, [40] header sbuf
+    mov r12, rdi
+    mov r13, rsi
+    mov r14, rdx
+    mov r15, rcx
+    lea rdi, [rsp + 40]
+    call sb_init
+    lea rdi, [rsp + 40]
+    lea rsi, [rel s_ct_mp]
+    call sb_appends
+    lea rdi, [rsp + 40]
+    mov rsi, r15
+    call sb_appends
+    mov rax, [rel g_hdr_discord]    ; first node = the Authorization line
+    xor edi, edi
+    mov rsi, [rax]
+    CALLC curl_slist_append
+    mov rdi, rax
+    mov rsi, [rsp + 40 + SB_DATA]
+    CALLC curl_slist_append
+    mov [rsp + 32], rax
+    lea rdi, [rsp + 40]
+    call sb_free
+    cmp qword [rsp + 32], 0
+    je .fail
+    call pool_get
+    test rax, rax
+    jz .nohandle
+    mov [rsp + 24], rax
+    lea rdi, [rsp]
+    call sb_init
+    mov rdi, [rsp + 24]
+    mov rsi, r12
+    mov rdx, [r13 + SB_DATA]
+    mov rcx, [r14 + SB_DATA]
+    mov r8, [r14 + SB_LEN]
+    lea r9, [rsp]
+    mov r10, [rsp + 32]
+    call rest_do
+    mov r12, rax
+    mov rdi, [rsp + 24]
+    call pool_put
+    lea rdi, [rsp]
+    call sb_free
+    mov rdi, [rsp + 32]
+    CALLC curl_slist_free_all
+    mov rax, r12
+    LEAVE_RET
+.nohandle:
+    mov rdi, [rsp + 32]
+    CALLC curl_slist_free_all
 .fail:
     xor eax, eax
     LEAVE_RET
@@ -901,6 +975,7 @@ casm_request:
     mov rcx, r14
     mov r8, r15
     lea r9, [rsp]
+    xor r10d, r10d
     call rest_do
     mov r12, rax
     mov rdi, [rsp + 24]

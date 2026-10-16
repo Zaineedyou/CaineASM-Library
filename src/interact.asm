@@ -114,6 +114,7 @@ span_tok:
 ;      2: /webhooks/{application_id}/{token}/messages/@original
 ; returns 0, or -1 when a needed field is missing / has odd characters
 ; ---------------------------------------------------------------------
+global ix_path
 ix_path:
     ENTER 0
     mov rbx, rdi

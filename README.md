@@ -9,6 +9,8 @@ Features:
 - **Callbacks**: `casm_on_message` (parsed message), `casm_on_interaction` (parsed slash command / button / modal) and `casm_on_event` (every dispatch event, raw JSON).
 - **Slash commands**: respond, defer, followup, edit/delete the response, register commands (global/guild), option and subcommand helpers.
 - **Embeds, buttons, select menus, modals**: builders (`casm_embed_*`, `casm_row_*`, `casm_select_*`, `casm_modal_*`, `casm_reply_*`), senders (`casm_send_reply`, `casm_respond_reply`, `casm_update_reply`, `casm_show_modal`, `casm_autocomplete`) and readers (`casm_modal_value`, `casm_select_values`, `casm_option_focused`).
+- **Command builder**: `casm_cmd_*` / `casm_opt_*` build slash commands, context-menu commands, options, choices, ranges, autocomplete and sub-command groups without writing JSON, checking Discord's documented limits before anything is sent. Register with `casm_register_cmds` / `casm_register_guild_cmds`.
+- **File attachments**: `casm_reply_file` / `casm_send_file` upload files with `multipart/form-data` (channel messages, edits, interaction follow-ups).
 - **Presence / status**: `casm_set_presence` (online/idle/dnd/invisible + Playing/Streaming/Listening/Watching/Custom/Competing). Sent in Identify and as Update Presence, throttled to Discord's limit.
 - **Message helpers**: `casm_unescape`, bot-mention check, reply-to-bot check, `casm_match_prefix`, `casm_next_word`.
 - **REST connection reuse** (keep-alive through a pool of curl handles).
@@ -21,12 +23,12 @@ Requires `nasm`, `gcc`, `ld`, `objcopy`, `ar`, `libcurl4-openssl-dev`. The crash
 
 ```
 make            # build/libcaineasm.a
-make test       # end-to-end tests against a local mock Discord (209 checks)
+make test       # end-to-end tests against a local mock Discord (326 checks)
 make valgrind   # the same tests under valgrind
 make example    # build/ping_bot and build/slash_bot
 ```
 
-Only the 79 `casm_*` symbols are visible from outside (internal symbols are made local with `objcopy`), so nothing collides with names in your code.
+Only the 98 `casm_*` symbols are visible from outside (internal symbols are made local with `objcopy`), so nothing collides with names in your code.
 
 ## Example
 ```c
@@ -48,7 +50,7 @@ int main(void) {
     return casm_run();                           /* blocking */
 }
 ```
-Link: `cc app.c libcaineasm.a -Iinclude -l:libcurl.so.4 -pthread`. Full examples: `examples/ping_bot.c` (prefix command) and `examples/slash_bot.c` (slash commands with defer + worker thread, embed, buttons, select menu, modal). Enable the **Message Content Intent** in the Discord Developer Portal for prefix commands.
+Link: `cc app.c libcaineasm.a -Iinclude -l:libcurl.so.4 -pthread`. Full examples: `examples/ping_bot.c` (prefix command) and `examples/slash_bot.c` (commands from the command builder, defer + worker thread, embed, buttons, select menu, modal, file upload). Enable the **Message Content Intent** in the Discord Developer Portal for prefix commands.
 
 ## API
 | Function | Purpose |
@@ -66,13 +68,17 @@ Link: `cc app.c libcaineasm.a -Iinclude -l:libcurl.so.4 -pthread`. Full examples
 | `casm_respond(i, text, len, flags)` / `casm_defer(i, flags)` | First response (type 4) / "thinking..." (type 5). `flags = CASM_MSG_EPHEMERAL` (64) makes it visible only to that user |
 | `casm_interaction_response(i, type, json, len)` | First response with any type (1..99) and raw `data` JSON (embeds, components, modal, autocomplete) |
 | `casm_followup`, `casm_edit_response`, `casm_delete_response` | Follow-up message, edit, delete the first response (token valid for 15 minutes) |
-| `casm_register_commands(json, len)` / `casm_register_guild_commands(guild, json, len)` | Register commands (bulk overwrite). Needs READY first |
+| `casm_register_commands(json, len)` / `casm_register_guild_commands(guild, json, len)` | Register commands from raw JSON (bulk overwrite). Needs READY first |
+| `casm_cmd_new(name, desc)`, `casm_cmd_new_context(name, 2\|3)`, `casm_cmd_option`, `casm_cmd_permissions`, `casm_cmd_nsfw`, `casm_cmd_contexts` | Build a slash command / user or message context-menu command (see below) |
+| `casm_opt_new(type, name, desc, required)`, `casm_opt_choice/_int/_num`, `casm_opt_range_int/_num`, `casm_opt_length`, `casm_opt_autocomplete`, `casm_opt_add` | Build options, choices, limits, sub-commands and groups |
+| `casm_register_cmds(list, n)` / `casm_register_guild_cmds(guild, list, n)` | Register built commands (up to 100). Needs READY first |
 | `casm_option(i, name, &v)`, `casm_option_in(opts, name, &v)`, `casm_subcommand(opts, &name, &sub)` | Read command options. Returns the JSON type: `'s'` string, `'d'` number, `'b'` bool, `0` missing |
 | `casm_interaction_keep(i)` / `casm_interaction_release(p)` | A copy of the interaction that stays valid after the callback returns (for worker threads) |
 | `casm_embed_new` + `casm_embed_title/description/url/timestamp/footer/author/image/thumbnail/color/field` | Build an embed (plain C strings, escaped automatically) |
 | `casm_row_new`, `casm_row_button(r, style, label, id_or_url, disabled)`, `casm_select_new`, `casm_select_option`, `casm_row_select` | Buttons (primary/secondary/success/danger/link) and select menus |
 | `casm_modal_new`, `casm_modal_input(...)` | Modal with text inputs (wrapped in a Label, as the current docs require) |
 | `casm_reply_new`, `casm_reply_content/flags/embed/row` | Compose a message payload; free every builder with `casm_builder_free` |
+| `casm_reply_file(r, filename, data, len, content_type)` / `casm_send_file(chan, filename, data, len, content_type, text)` | Attach a file to a reply / send one file in one call |
 | `casm_send_reply`, `casm_edit_message`, `casm_respond_reply`, `casm_update_reply`, `casm_followup_reply`, `casm_edit_response_reply`, `casm_show_modal` | Send a payload to a channel / as an interaction response |
 | `casm_autocomplete(i, names, values, n)`, `casm_option_focused(i, &name, &value)` | Autocomplete (max 25 choices) |
 | `casm_modal_value(i, custom_id, &v)`, `casm_select_values(i, &arr)`, `casm_array_at(&arr, idx, &v)` | Read modal and select-menu submissions |
@@ -85,6 +91,42 @@ Link: `cc app.c libcaineasm.a -Iinclude -l:libcurl.so.4 -pthread`. Full examples
 | `casm_set_api_base / set_gateway_url / set_user_agent / set_ca_file / set_quiet` | Optional |
 
 REST functions return the HTTP status (2xx = success), `0` if the transfer failed, `-1` for invalid arguments (IDs must be 1–20 digits, so a `/` or `..` can never be injected into a path).
+
+## Command builder
+```c
+casm_cmd *c = casm_cmd_new("ban", "Ban a member");
+casm_opt *who = casm_opt_new(CASM_OPT_USER, "who", "Member", 1);
+casm_opt *why = casm_opt_new(CASM_OPT_STRING, "reason", "Reason", 0);
+casm_opt_length(why, 1, 200);
+casm_cmd_option(c, who);                          /* required options first */
+casm_cmd_option(c, why);
+casm_cmd_permissions(c, "4");                     /* BAN_MEMBERS (decimal permission bits) */
+casm_cmd *list[] = { c };
+casm_register_guild_cmds(guild_id, list, 1);      /* or casm_register_cmds(list, 1) */
+casm_builder_free(c); casm_builder_free(who); casm_builder_free(why);
+```
+- Constructors return `NULL`, setters `-1`, **before anything is sent**, when a documented rule is broken: names 1-32 characters and lowercase `[-_a-z0-9]` (non-ASCII allowed), descriptions 1-100, at most 25 options / choices per list, required options before optional ones, choices only on STRING / INTEGER / NUMBER options with a matching value type, no choices together with autocomplete, integers within ±(2^53-1).
+- Adding an option **copies** it, so add an option's choices and sub-options first and the option to its parent afterwards. A sub-command group takes sub-commands, a sub-command takes normal options.
+- `casm_cmd_new_context("Show Info", 2)` makes a user menu command (3 = message menu). `casm_cmd_contexts(c, CASM_CTX_GUILD | CASM_CTX_PRIVATE_CHANNEL)` sets where a global command is usable.
+- Not covered: localizations, `channel_types`, `file_types`, `integration_types`. Use raw JSON with `casm_register_commands` for those. Discord still checks the rest (for example no top-level options next to sub-commands) and answers 400.
+
+## File attachments
+```c
+casm_send_file("123456789", "report.txt", data, len, NULL, "Here you go");        /* one call */
+
+casm_reply *r = casm_reply_new();                                                 /* or several files */
+casm_embed *e = casm_embed_new();
+casm_embed_image(e, "attachment://chart.png");                                    /* show it in the embed */
+casm_reply_embed(r, e);
+casm_reply_file(r, "chart.png", png, png_len, NULL);
+casm_reply_file(r, "data.csv", csv, csv_len, NULL);
+casm_send_reply("123456789", r, NULL);
+casm_builder_free(r); casm_builder_free(e);
+```
+- Sent as `multipart/form-data` exactly as in the Discord docs: a `payload_json` part with the message and an `attachments` array, plus one `files[n]` part per file.
+- Works with `casm_send_reply`, `casm_edit_message` (the new files **replace** the existing attachments), `casm_followup_reply` and `casm_edit_response_reply`. The first interaction response (`casm_respond_reply`, `casm_update_reply`) cannot carry files and returns `-1`: call `casm_defer` first, then `casm_followup_reply`.
+- The bytes are copied. `content_type` may be `NULL` (guessed from png jpg jpeg gif webp txt log csv json pdf mp3 mp4 zip, otherwise `application/octet-stream`). Filenames: 1-255 bytes, no control characters, `"`, `\` or `/`.
+- A request is limited to 25 MiB (Discord docs); larger uploads return `-1` before anything is sent. Embeds can only display `.jpg .jpeg .png .webp .gif`. The transfer timeout grows with the body (20 s + 1 s per 128 KiB).
 
 ## Presence
 ```c
@@ -121,11 +163,11 @@ If `addr2line` (binutils) is installed, the handler prints function names and li
 
 ## Limitations (v0.2)
 - **One client per process** (global state).
-- Not included: voice, sharding, guild/user cache, file attachments, other components (user/role/channel select, Components V2 such as Section/Container), a command builder (write the JSON yourself), length-limit checks (Discord rejects with 400), and interaction signature verification for HTTP webhooks (this library receives interactions over the gateway).
+- Not included: voice, sharding, guild/user cache, other components (user/role/channel select, Components V2 such as Section/Container), command localizations, length-limit checks for embeds and messages (Discord rejects with 400), attachments on the first interaction response, and interaction signature verification for HTTP webhooks (this library receives interactions over the gateway).
 - The REST pool holds at most 8 handles; connections closed by the server are reopened automatically.
 - The rate limiter is keyed by route, not by Discord's bucket hash, and the table has 64 slots (oldest entries are reused).
 - x86-64 Linux only (ELF64, SysV ABI).
-- The 209 automated checks run against a local mock Discord (gateway + REST over TLS). Live testing on real Discord is described under "Real-world testing" below.
+- The 326 automated checks run against a local mock Discord (gateway + REST over TLS). Live testing on real Discord is described under "Real-world testing" below.
 
 ## Real-world testing
 Tested live against real Discord, deployed as a bot on Railway:
@@ -134,10 +176,12 @@ Tested live against real Discord, deployed as a bot on Railway:
 - **Crash reporter**: a deliberate crash on Railway printed the signal, fault address and backtrace, and `addr2line` resolved the function names and source lines (`ix_path at src/interact.asm:124`, and so on).
 
 ## Tests
-`tests/run_test.py` runs `tests/test_caineasm.c` against `tests/mock_discord.py` (209 checks, also under valgrind with no errors and no definite leaks):
+`tests/run_test.py` runs `tests/test_caineasm.c` against `tests/mock_discord.py` (326 checks, also under valgrind with no errors and no definite leaks):
 - Gateway: identify, heartbeat, resume with the right sequence, invalid session then re-identify, fatal close code 4004, parsing of every message field (guild, DM, reply, bot, attachment, mention).
 - REST: every function (body, headers, method), long-message splitting, 429 retry, argument validation, 80 parallel sends from 8 threads, connection reuse (including when the server drops the connection).
 - Rate limiting: a Discord-style bucket mock (2 requests / 1.5 s per channel) must never see a request on an empty bucket; separate channels don't wait on each other; a global 429 is retried after `retry_after`.
 - Presence: payload in Identify, op 3 updates (exact JSON, at least 4 s apart), no presence on Resume, latest presence on re-Identify, invalid arguments rejected.
+- Command builder: the registered JSON for slash commands, options, choices, ranges, autocomplete, groups, context menus and flags is compared with the documented shapes, and dozens of rule violations must return `NULL` / `-1` without reaching the network.
+- File uploads: every multipart request is parsed and compared byte for byte (framing, `payload_json`, `files[n]` headers and data, including binary data that looks like multipart markers and a 1 MB file), each with its own boundary; invalid filenames, content types and over-limit uploads are rejected.
 - `casm_unescape`: test vectors plus a 5000-case fuzz against `json.dumps`, including UTF-8 truncation.
 - Message helpers, the crash handler (the signal still kills the process, fault address and backtrace are printed, stack overflow included), and the whole slash-command flow: parsing, respond/defer/followup/edit/delete, options and subcommands, command registration, `casm_interaction_keep`, and every builder compared field by field with the expected JSON, plus the modal / select / autocomplete readers.

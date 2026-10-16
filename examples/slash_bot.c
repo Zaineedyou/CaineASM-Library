@@ -10,11 +10,21 @@
 #include <unistd.h>
 #include "caineasm.h"
 
-static const char *COMMANDS =
-    "[{\"name\":\"ping\",\"description\":\"Pong\",\"type\":1},"
-    "{\"name\":\"panel\",\"description\":\"Embed + tombol + menu + modal\",\"type\":1},"
-    "{\"name\":\"echo\",\"description\":\"Ulangi teks (jawaban tertunda)\",\"type\":1,"
-    "\"options\":[{\"name\":\"text\",\"description\":\"Teksnya\",\"type\":3,\"required\":true}]}]";
+/* Commands built with the command builder (no JSON by hand). */
+static long register_all(const char *guild) {
+    casm_cmd *ping = casm_cmd_new("ping", "Pong");
+    casm_cmd *panel = casm_cmd_new("panel", "Embed + tombol + menu + modal");
+    casm_cmd *echo = casm_cmd_new("echo", "Ulangi teks (jawaban tertunda)");
+    casm_cmd *file = casm_cmd_new("file", "Kirim file teks sebagai lampiran");
+    casm_opt *text = casm_opt_new(CASM_OPT_STRING, "text", "Teksnya", 1);
+    casm_opt_length(text, 1, 200);
+    casm_cmd_option(echo, text);
+    casm_cmd *list[] = { ping, panel, echo, file };
+    long r = (guild && *guild) ? casm_register_guild_cmds(guild, list, 4) : casm_register_cmds(list, 4);
+    for (int k = 0; k < 4; k++) casm_builder_free(list[k]);
+    casm_builder_free(text);
+    return r;
+}
 
 static void on_signal(int sig) { (void)sig; casm_stop(); }
 
@@ -92,6 +102,15 @@ static void on_interaction(const casm_interaction *i, void *user) {
         pthread_t t;
         if (k && pthread_create(&t, NULL, slow_echo, k) == 0) pthread_detach(t);
         else casm_interaction_release(k);
+    } else if (is(i->command_name, "file")) {
+        /* callback responses cannot carry files: defer, then follow up with the attachment */
+        if (casm_defer(i, 0) != 204) return;
+        static const char body[] = "Dibuat oleh CaineASM-Library.\nIni lampiran teks.\n";
+        casm_reply *r = casm_reply_new();
+        casm_reply_content(r, "Ini filenya:", 12);
+        casm_reply_file(r, "hello.txt", body, sizeof body - 1, NULL);   /* type guessed: text/plain */
+        casm_followup_reply(i, r);
+        casm_builder_free(r);
     }
 }
 
@@ -99,8 +118,7 @@ static void on_event(const char *type, size_t tl, const char *d, size_t dl, void
     (void)d; (void)dl; (void)user;
     if (tl != 5 || memcmp(type, "READY", 5) != 0) return;       /* application id is known now */
     const char *guild = getenv("GUILD_ID");
-    long r = (guild && *guild) ? casm_register_guild_commands(guild, COMMANDS, strlen(COMMANDS))
-                               : casm_register_commands(COMMANDS, strlen(COMMANDS));
+    long r = register_all(guild);
     fprintf(stderr, "register commands: HTTP %ld\n", r);
 }
 

@@ -14,6 +14,8 @@
 #include <string.h>
 #include <pthread.h>
 #include <time.h>
+#include <limits.h>
+#include <math.h>
 #include "caineasm.h"
 
 static void pr(const char *k, casm_str s) {
@@ -279,6 +281,16 @@ static void form_test(const casm_interaction *i) {
     casm_builder_free(m);
 }
 
+static casm_opt *junk[32]; static int nj;
+#define NEWO(t) (junk[nj++] = casm_opt_new((t), "x", "d", 0))
+
+static unsigned char *mkdata(size_t n) {
+    unsigned char *p = malloc(n);
+    for (size_t k = 0; k < n; k++) p[k] = (unsigned char)(k * 7 + 3);
+    if (n > 30) memcpy(p + 10, "\r\n--\r\n\r\n", 8);              /* multipart-looking bytes inside the data */
+    return p;
+}
+
 static void on_interaction(const casm_interaction *i, void *u) {
     (void)u;
     printf("INT");
@@ -357,6 +369,128 @@ static void on_interaction(const casm_interaction *i, void *u) {
         const char *cmds = "[{\"name\":\"ping\",\"description\":\"Pong\",\"type\":1,\"options\":[{\"name\":\"text\",\"description\":\"t\",\"type\":3}]}]";
         printf("RET regglobal %ld\n", casm_register_commands(cmds, strlen(cmds)));
         printf("RET regguild %ld\n", casm_register_guild_commands("555", cmds, strlen(cmds)));
+    } else if (starts_str(i->command_name, "build")) {
+        casm_cmd *h = casm_cmd_new("hello", "Say \"hello\" \xC3\xA9");
+        casm_opt *who = casm_opt_new(CASM_OPT_STRING, "who", "Who", 1);
+        int rc = 0;
+        rc |= casm_opt_choice(who, "Alice", "a"); rc |= casm_opt_choice(who, "Bo\"b", "b");
+        casm_opt *cnt = casm_opt_new(CASM_OPT_INTEGER, "count", "How many", 0);
+        rc |= casm_opt_range_int(cnt, 1, 10);
+        casm_opt *rat = casm_opt_new(CASM_OPT_NUMBER, "ratio", "Ratio", 0);
+        rc |= casm_opt_range_num(rat, 0.1, 99.5);
+        casm_opt *q = casm_opt_new(CASM_OPT_STRING, "q", "Query", 0);
+        rc |= casm_opt_length(q, 2, 50); rc |= casm_opt_autocomplete(q);
+        casm_opt *lv = casm_opt_new(CASM_OPT_INTEGER, "level", "Level", 0);
+        rc |= casm_opt_choice_int(lv, "Low", 1); rc |= casm_opt_choice_int(lv, "High", -5);
+        casm_opt *pi = casm_opt_new(CASM_OPT_NUMBER, "pi", "Pi", 0);
+        rc |= casm_opt_choice_num(pi, "Pi", 3.14159);
+        casm_opt *mn = casm_opt_new(CASM_OPT_INTEGER, "min", "Min only", 0);
+        rc |= casm_opt_range_int(mn, -3, LONG_MAX);
+        casm_opt *mx = casm_opt_new(CASM_OPT_NUMBER, "big", "Max only", 0);
+        rc |= casm_opt_range_num(mx, -INFINITY, 1e20);
+        rc |= casm_cmd_permissions(h, "8"); rc |= casm_cmd_nsfw(h); rc |= casm_cmd_contexts(h, CASM_CTX_GUILD | CASM_CTX_PRIVATE_CHANNEL);
+        rc |= casm_cmd_option(h, who); rc |= casm_cmd_option(h, cnt); rc |= casm_cmd_option(h, rat); rc |= casm_cmd_option(h, q);
+        rc |= casm_cmd_option(h, lv); rc |= casm_cmd_option(h, pi); rc |= casm_cmd_option(h, mn); rc |= casm_cmd_option(h, mx);
+        casm_cmd *adm = casm_cmd_new("admin", "Admin tools");
+        casm_opt *grp = casm_opt_new(CASM_OPT_SUB_COMMAND_GROUP, "ban", "Ban tools", 0);
+        casm_opt *sub = casm_opt_new(CASM_OPT_SUB_COMMAND, "user", "Ban a user", 0);
+        casm_opt *usr = casm_opt_new(CASM_OPT_USER, "target", "Target", 1);
+        rc |= casm_opt_add(sub, usr); rc |= casm_opt_add(grp, sub); rc |= casm_cmd_option(adm, grp);
+        casm_cmd *ctx = casm_cmd_new_context("Show Info", 2);
+        printf("RET bok %d\n", rc);
+        casm_cmd *list[3] = { h, adm, ctx };
+        printf("RET breg %ld\n", casm_register_cmds(list, 3));
+        printf("RET bregguild %ld\n", casm_register_guild_cmds("555", list, 3));
+        /* rule violations: nothing may reach the network */
+        printf("RET b1 %d\n", casm_cmd_new("Hello", "x") == NULL);
+        printf("RET b2 %d\n", casm_cmd_new("a", "") == NULL);
+        printf("RET b3 %d\n", casm_cmd_new("a b", "x") == NULL);
+        printf("RET b4 %d\n", casm_cmd_new(NULL, "x") == NULL);
+        printf("RET b5 %d\n", casm_cmd_new("a", NULL) == NULL);
+        printf("RET b6 %d\n", casm_opt_new(CASM_OPT_SUB_COMMAND, "x", "d", 1) == NULL);
+        printf("RET b7 %d\n", casm_opt_new(12, "x", "d", 0) == NULL);
+        printf("RET b8 %d\n", casm_opt_new(0, "x", "d", 0) == NULL);
+        printf("RET b9 %d\n", casm_cmd_new_context("x", 1) == NULL);
+        casm_opt *opt = casm_opt_new(CASM_OPT_STRING, "o", "d", 0);          /* optional, then a required one */
+        casm_opt *req = casm_opt_new(CASM_OPT_STRING, "r", "d", 1);
+        casm_cmd *c2 = casm_cmd_new("c2", "d");
+        { int a1 = casm_cmd_option(c2, opt); int a2 = casm_cmd_option(c2, req); printf("RET b10 %d %d\n", a1, a2); }
+        printf("RET b11 %d\n", casm_opt_choice(lv, "x", "y"));               /* string choice on an integer option */
+        printf("RET b12 %d\n", casm_opt_choice_int(opt, "x", 1));
+        printf("RET b13 %d\n", casm_opt_choice_int(lv, "x", 9007199254740992L));
+        printf("RET b14 %d\n", casm_opt_choice_num(pi, "x", NAN));
+        printf("RET b15 %d\n", casm_opt_choice_num(pi, "x", INFINITY));
+        printf("RET b16 %d\n", casm_opt_autocomplete(who));                   /* has choices */
+        printf("RET b17 %d\n", casm_opt_choice(q, "x", "y"));                 /* has autocomplete */
+        printf("RET b18 %d\n", casm_opt_range_int(opt, 1, 2));                /* wrong type */
+        printf("RET b19 %d\n", casm_opt_range_int(NEWO(CASM_OPT_INTEGER), 5, 1));
+        printf("RET b20 %d\n", casm_opt_range_num(NEWO(CASM_OPT_NUMBER), 2.0, 1.0));
+        printf("RET b21 %d\n", casm_opt_range_num(NEWO(CASM_OPT_NUMBER), NAN, 1.0));
+        printf("RET b22 %d\n", casm_opt_length(NEWO(CASM_OPT_STRING), 0, 0));
+        printf("RET b23 %d\n", casm_opt_length(NEWO(CASM_OPT_STRING), 5, 2));
+        printf("RET b24 %d\n", casm_opt_length(NEWO(CASM_OPT_STRING), 0, 6001));
+        printf("RET b25 %d\n", casm_opt_add(opt, req));                       /* parent is not a sub-command */
+        printf("RET b26 %d\n", casm_opt_add(grp, req));                       /* a group takes sub-commands only */
+        printf("RET b27 %d\n", casm_cmd_permissions(c2, "abc"));
+        printf("RET b28 %d\n", casm_cmd_permissions(c2, ""));
+        printf("RET b29 %d\n", casm_cmd_contexts(c2, 0));
+        printf("RET b30 %d\n", casm_cmd_contexts(c2, 8));
+        printf("RET b31 %d\n", casm_cmd_option(ctx, opt));                    /* context menus take no options */
+        printf("RET b32 %ld %ld %ld\n", casm_register_cmds(NULL, 1), casm_register_cmds(list, 0), casm_register_cmds(list, 101));
+        printf("RET b33 %ld\n", casm_register_guild_cmds("12x", list, 3));
+        { casm_cmd *nl[2] = { h, NULL }; printf("RET b34 %ld\n", casm_register_cmds(nl, 2)); }
+        { casm_opt *big = casm_opt_new(CASM_OPT_STRING, "big", "d", 0); int ok = 0, bad = 0; char nm[8];
+          for (int k = 0; k < 27; k++) { snprintf(nm, sizeof nm, "c%d", k); (casm_opt_choice(big, nm, "v") == 0 ? ok++ : bad++); }
+          printf("RET b35 %d %d\n", ok, bad); casm_builder_free(big); }
+        { casm_cmd *big = casm_cmd_new("many", "d"); int ok = 0, bad = 0; char nm[8];
+          for (int k = 0; k < 27; k++) { snprintf(nm, sizeof nm, "o%d", k); casm_opt *o2 = casm_opt_new(CASM_OPT_BOOLEAN, nm, "d", 0);
+              (casm_cmd_option(big, o2) == 0 ? ok++ : bad++); casm_builder_free(o2); }
+          printf("RET b36 %d %d\n", ok, bad); casm_builder_free(big); }
+        casm_builder_free(h); casm_builder_free(adm); casm_builder_free(ctx); casm_builder_free(c2);
+        casm_builder_free(who); casm_builder_free(cnt); casm_builder_free(rat); casm_builder_free(q); casm_builder_free(lv);
+        casm_builder_free(pi); casm_builder_free(mn); casm_builder_free(mx); casm_builder_free(grp); casm_builder_free(sub);
+        casm_builder_free(usr); casm_builder_free(opt); casm_builder_free(req);
+        for (int k = 0; k < nj; k++) casm_builder_free(junk[k]);
+    } else if (starts_str(i->command_name, "files")) {
+        unsigned char *d1 = mkdata(300), *d2 = mkdata(1000000);
+        casm_reply *r;
+        printf("RET f1 %ld\n", casm_send_file("1001", "cat.png", d1, 300, NULL, "caption \"q\" \xC3\xA9"));
+        printf("RET f2 %ld\n", casm_send_file("1001", "report.txt", "hello\n", 6, NULL, NULL));
+        printf("RET f3 %ld\n", casm_send_file("1001", "Big \xC3\xA9.BIN", d2, 1000000, "application/x-custom", NULL));
+        printf("RET f4 %ld\n", casm_send_file("1001", "empty.log", NULL, 0, NULL, NULL));
+        r = casm_reply_new();
+        casm_embed *e = casm_embed_new(); casm_embed_image(e, "attachment://a.txt"); casm_embed_title(e, "T");
+        casm_reply_content(r, "two files", 9); casm_reply_embed(r, e);
+        int rc = casm_reply_file(r, "a.txt", "AAA", 3, NULL);
+        rc |= casm_reply_file(r, "b.jpeg", d1, 300, NULL);
+        printf("RET fadd %d\n", rc);
+        printf("RET fsend %ld\n", casm_send_reply("1001", r, "2001"));
+        printf("RET fedit %ld\n", casm_edit_message("1001", "5000", r));
+        printf("RET ffollow %ld\n", casm_followup_reply(i, r));
+        printf("RET feditresp %ld\n", casm_edit_response_reply(i, r));
+        printf("RET frespond %ld\n", casm_respond_reply(i, r));          /* callbacks cannot carry files */
+        printf("RET fupdate %ld\n", casm_update_reply(i, r));
+        casm_builder_free(r); casm_builder_free(e);
+        r = casm_reply_new();
+        printf("RET fbad1 %d\n", casm_reply_file(r, "a/b.txt", "x", 1, NULL));
+        printf("RET fbad2 %d\n", casm_reply_file(r, "", "x", 1, NULL));
+        printf("RET fbad3 %d\n", casm_reply_file(r, "a\"b.txt", "x", 1, NULL));
+        printf("RET fbad4 %d\n", casm_reply_file(r, "a\\b.txt", "x", 1, NULL));
+        printf("RET fbad5 %d\n", casm_reply_file(r, "a\nb.txt", "x", 1, NULL));
+        printf("RET fbad6 %d\n", casm_reply_file(r, "x.txt", NULL, 5, NULL));
+        printf("RET fbad7 %d\n", casm_reply_file(r, "x.txt", "x", 1, "nonsense"));
+        printf("RET fbad8 %d\n", casm_reply_file(r, "x.txt", "x", 1, "text/pl\nain"));
+        printf("RET fbad9 %d\n", casm_reply_file(NULL, "x.txt", "x", 1, NULL));
+        printf("RET fbad10 %d\n", casm_reply_file(r, NULL, "x", 1, NULL));
+        { char *huge = calloc(26200000, 1);
+          printf("RET fbad11 %d\n", huge ? casm_reply_file(r, "huge.bin", huge, 26200000, NULL) : -1);
+          printf("RET fok %d\n", casm_reply_file(r, "ok.bin", huge, 20000000, NULL));          /* stays below the request limit */
+          printf("RET fbad12 %d\n", casm_reply_file(r, "more.bin", huge, 10000000, NULL));     /* but not together with the first */
+          free(huge); }
+        casm_builder_free(r);
+        printf("RET fbad13 %ld\n", casm_send_file("abc/../x", "a.txt", "x", 1, NULL, NULL));
+        printf("RET fbad14 %ld\n", casm_send_file("1001", "a/b", "x", 1, NULL, NULL));
+        free(d1); free(d2);
     } else if (starts_str(i->command_name, "done")) {
         if (inter_thr_started) pthread_join(inter_thr, NULL);
         casm_stop();

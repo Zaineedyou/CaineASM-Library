@@ -5,7 +5,7 @@
 ; JSON shapes follow the Discord docs: Message resource (embed object,
 ; message create body), Components reference (action row, button,
 ; string select, label + text input) and Receiving and responding.
-; Every builder handle is 80 bytes: three sbufs (a, b, c).
+; Every builder handle is 104 bytes: three sbufs (a, b, c), a qword of flags [72] and a files sbuf [80].
 ; =====================================================================
 %include "defs.inc"
 
@@ -13,12 +13,13 @@ extern malloc, free, memcmp
 extern c_strlen, parse_u64
 extern sb_init, sb_free, sb_append, sb_appends, sb_putc, sb_append_u64, sb_append_json_esc
 extern json_get, json_path, json_arr_next, json_true
-extern do_call, valid_id, ix_send, build_path
+extern do_call, valid_id, ix_send, build_path, mp_send, ix_reply_mp
 
 %define H_A 0
 %define H_B 24
 %define H_C 48
-%define H_SIZE 80
+%define H_F 80                      ; files sbuf (replies only; see upload.asm), [72] = per-kind flags/counters
+%define H_SIZE 104
 %define I_RAW 176
 %define I_OPTS 160
 
@@ -79,6 +80,8 @@ k_dcomps:    db "data.components", 0
 k_dopts:     db "data.options", 0
 
 section .text
+
+global j_sep, j_key, js, jn, j_esc, j_escn, jbool, bnew, bad_ret, reply_finish
 
 ; ---------------------------------------------------------------------
 ; JSON writing primitives (sbufs hold comma separated members without the outer braces)
@@ -230,6 +233,9 @@ bnew:
     call sb_init
     lea rdi, [rbx + H_C]
     call sb_init
+    mov qword [rbx + 72], 0
+    lea rdi, [rbx + H_F]
+    call sb_init
     mov rax, rbx
 .d:
     LEAVE_RET
@@ -246,6 +252,8 @@ casm_builder_free:
     lea rdi, [rbx + H_B]
     call sb_free
     lea rdi, [rbx + H_C]
+    call sb_free
+    lea rdi, [rbx + H_F]
     call sb_free
     mov rdi, rbx
     CALLC free
@@ -987,10 +995,20 @@ chan_send:
     lea rsi, [rsp + 24]
     mov rdx, rbx
     call reply_finish
+    cmp word [r14 + 72], 0           ; files attached: multipart/form-data
+    je .plain
+    mov rdi, r15
+    lea rsi, [rsp]
+    mov rdx, r14
+    lea rcx, [rsp + 24]
+    call mp_send
+    jmp .sent
+.plain:
     mov rdi, r15
     lea rsi, [rsp]
     lea rdx, [rsp + 24]
     call do_call
+.sent:
     mov r12, rax
     lea rdi, [rsp]
     call sb_free
@@ -1034,6 +1052,17 @@ ix_reply:
     mov rbx, r8
     test rbx, rbx
     jz .bad
+    cmp word [rbx + 72], 0           ; files attached
+    je .nofiles
+    test r15, r15
+    jnz .bad                         ; callback responses (types 4 / 7) cannot carry files: defer + follow-up
+    mov rdi, r12
+    mov rsi, r13
+    mov rdx, r14
+    mov rcx, rbx
+    call ix_reply_mp
+    LEAVE_RET
+.nofiles:
     lea rdi, [rsp]
     call sb_init
     test r15, r15

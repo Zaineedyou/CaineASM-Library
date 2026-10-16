@@ -113,7 +113,7 @@ class Mock:
                 rest += c.recv(65536)
             body, buf = rest[:n], rest[n:]
             status, out, extra = 200, b'{}', ''
-            self.ev('rest', {'method': meth, 'path': path, 'headers': hd, 'body': body.decode('utf-8', 'replace'), 'conn': conn_id, 'ts': time.time()})
+            self.ev('rest', {'method': meth, 'path': path, 'headers': hd, 'body': body.decode('utf-8', 'replace'), 'raw': body, 'conn': conn_id, 'ts': time.time()})
             m_rl = re.fullmatch(r'/api/v10/channels/(\d+)/messages', path)
             if self.mode == 'ratelimit' and meth == 'POST' and m_rl:
                 # Discord-style bucket: 2 requests per 1.5 s per channel, headers on every answer
@@ -217,6 +217,8 @@ class Mock:
             self._inter('3013', type=3, token='tok_U', data={'custom_id': 'sel1', 'component_type': 3, 'values': ['a', 'b']}),
             self._inter('3014', 'search', type=4, token='tok_U', data={'options': [
                 {'name': 'sub', 'type': 1, 'options': [{'name': 'q', 'type': 3, 'value': 'he', 'focused': True}]}]}),
+            self._inter('3015', 'build', token='tok_U'),
+            self._inter('3016', 'files', token='tok_U'),
             self._inter('3007', 'done'),
         ]
 
