@@ -19,6 +19,12 @@
 
 #include <stddef.h>
 
+/* ---- version ---- */
+#define CASM_VERSION_MAJOR  0
+#define CASM_VERSION_MINOR  3
+#define CASM_VERSION_PATCH  0
+#define CASM_VERSION_STRING "0.3.0"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -30,6 +36,7 @@ extern "C" {
 #define CASM_INTENT_GUILD_MESSAGES          (1UL << 9)
 #define CASM_INTENT_GUILD_MESSAGE_REACTIONS (1UL << 10)
 #define CASM_INTENT_DIRECT_MESSAGES         (1UL << 12)
+#define CASM_INTENT_DIRECT_MESSAGE_REACTIONS (1UL << 13)
 #define CASM_INTENT_MESSAGE_CONTENT         (1UL << 15)  /* privileged */
 /* guilds + guild/DM messages + message content */
 #define CASM_INTENTS_DEFAULT (CASM_INTENT_GUILDS | CASM_INTENT_GUILD_MESSAGES | \
@@ -58,6 +65,44 @@ typedef struct casm_message {
 } casm_message;
 
 typedef void (*casm_message_cb)(const casm_message *msg, void *user);
+
+/* ---- more parsed events (same slice rules as casm_message; all run on the gateway thread) ----
+ * MESSAGE_UPDATE has the shape of casm_message (fields Discord leaves out are NULL slices; content
+ * needs the message content intent). The others below need these intents:
+ *   MESSAGE_DELETE            CASM_INTENT_GUILD_MESSAGES / CASM_INTENT_DIRECT_MESSAGES
+ *   MESSAGE_REACTION_ADD/REMOVE  CASM_INTENT_GUILD_MESSAGE_REACTIONS / CASM_INTENT_DIRECT_MESSAGE_REACTIONS
+ *   GUILD_MEMBER_ADD/REMOVE   CASM_INTENT_GUILD_MEMBERS (privileged: enable it in the Developer Portal) */
+typedef struct casm_message_delete {
+    casm_str id;
+    casm_str channel_id;
+    casm_str guild_id;        /* ptr == NULL in DMs */
+    casm_str raw;
+} casm_message_delete;
+typedef void (*casm_message_delete_cb)(const casm_message_delete *ev, void *user);
+
+typedef struct casm_reaction {
+    casm_str user_id;
+    casm_str channel_id;
+    casm_str message_id;
+    casm_str guild_id;            /* ptr == NULL in DMs */
+    casm_str emoji_name;          /* the character for a standard emoji (JSON-escaped slice); name for a custom one */
+    casm_str emoji_id;            /* ptr == NULL for a standard emoji */
+    casm_str message_author_id;   /* only sent with add events (ptr == NULL otherwise) */
+    casm_str raw;
+    long     added;               /* 1 = MESSAGE_REACTION_ADD, 0 = MESSAGE_REACTION_REMOVE */
+    long     burst;               /* super reaction */
+} casm_reaction;
+typedef void (*casm_reaction_cb)(const casm_reaction *ev, void *user);
+
+typedef struct casm_member_event {
+    casm_str guild_id;
+    casm_str user_id;
+    casm_str user_name;           /* user.username */
+    casm_str nick;                /* only on join (ptr == NULL when none) */
+    casm_str raw;
+    long     joined;              /* 1 = GUILD_MEMBER_ADD, 0 = GUILD_MEMBER_REMOVE */
+} casm_member_event;
+typedef void (*casm_member_cb)(const casm_member_event *ev, void *user);
 
 /* Every dispatch event (READY, RESUMED, MESSAGE_CREATE, GUILD_CREATE, ...):
  * `type` is the event name, `data` the raw JSON of its "d" object. */
@@ -96,6 +141,11 @@ void casm_set_gateway_url(const char *url);     /* default wss://gateway.discord
 void casm_set_user_agent(const char *ua);       /* must look like "DiscordBot (url, version)" */
 void casm_set_ca_file(const char *path);        /* custom CA bundle (tests, odd systems) */
 void casm_set_quiet(int quiet);                 /* 1 = no log lines on stderr */
+/* Send the library's log lines (no trailing newline, UTF-8) to your own logger instead of stderr.
+ * The callback always receives them, even with casm_set_quiet(1); it can run on any library thread.
+ * NULL = back to stderr. The line is only valid during the call. */
+void casm_set_log_callback(void (*cb)(const char *line, size_t len, void *user), void *user);
+const char *casm_version(void);                 /* the version of the linked library, e.g. "0.3.0" */
 /* Bot status and activity. Any thread, before or after casm_run starts; the latest call wins and
  * goes out within about a second (Discord allows 5 updates per 20 s, so updates are spaced >= 4 s).
  * status: "online" (NULL = online), "idle", "dnd", "invisible", "offline".
@@ -121,6 +171,10 @@ int  casm_set_crash_handler(int enable);
 
 void casm_on_message(casm_message_cb cb, void *user);
 void casm_on_event(casm_event_cb cb, void *user);
+void casm_on_message_update(casm_message_cb cb, void *user);          /* MESSAGE_UPDATE */
+void casm_on_message_delete(casm_message_delete_cb cb, void *user);   /* MESSAGE_DELETE */
+void casm_on_reaction(casm_reaction_cb cb, void *user);               /* MESSAGE_REACTION_ADD and _REMOVE */
+void casm_on_member(casm_member_cb cb, void *user);                   /* GUILD_MEMBER_ADD and _REMOVE */
 /* Runs on the gateway thread. Discord wants the FIRST response within 3 seconds:
  * answer (casm_respond) or casm_defer right away, do slow work afterwards. */
 void casm_on_interaction(casm_interaction_cb cb, void *user);
@@ -251,6 +305,12 @@ int casm_embed_thumbnail(casm_embed *e, const char *url);
 int casm_embed_color(casm_embed *e, unsigned long rgb);         /* 0xRRGGBB */
 int casm_embed_field(casm_embed *e, const char *name, const char *value, int inline_);
 
+/* Generic JSON reader for slices you get from the library (a casm_str holding an object):
+ * dotted path, e.g. casm_json_get(&i->raw, "data.resolved.users.123456.username", &out).
+ * Returns the JSON type of the value: 's' string (JSON-escaped, no quotes), 'o' object, 'a' array,
+ * 'd' number, 'b' bool, 'n' null; 0 = not found. out may be NULL. */
+int casm_json_get(const casm_str *json, const char *path, casm_str *out);
+
 /* A row holds up to 5 buttons OR one select. Styles: 1 primary, 2 secondary,
  * 3 success, 4 danger (id_or_url = custom_id), 5 link (id_or_url = URL). */
 #define CASM_BUTTON_PRIMARY   1
@@ -268,9 +328,25 @@ casm_select *casm_select_new(const char *custom_id, const char *placeholder,
 int casm_select_option(casm_select *s, const char *label, const char *value,
                        const char *description, int is_default);
 
+/* Select menus of users / roles / mentionables / channels (Discord docs, Components reference):
+ * type CASM_SELECT_USER .. CASM_SELECT_CHANNEL. min_values 0-25 (< 0 = default 1), max_values 1-25
+ * (<= 0 = default 1), placeholder up to 150 characters (NULL = none), custom_id 1-100. NULL on a bad
+ * argument. Add the select to a row with casm_row_select (one select per row) or to a modal with
+ * casm_modal_select. The chosen ids are in data.values: casm_select_values / casm_array_at; the
+ * resolved objects are in the interaction's raw JSON, read them with casm_json_get. */
+#define CASM_SELECT_USER         5
+#define CASM_SELECT_ROLE         6
+#define CASM_SELECT_MENTIONABLE  7
+#define CASM_SELECT_CHANNEL      8
+casm_select *casm_select_new_entity(int type, const char *custom_id, const char *placeholder,
+                                    long min_values, long max_values);
+int casm_select_channel_type(casm_select *s, int channel_type);   /* channel select: show only this channel type */
+int casm_select_disabled(casm_select *s);                         /* messages only (not allowed in a modal) */
+
 /* Modal with text inputs (each wrapped in a Label, as the current docs require).
  * paragraph = 1 for multi-line. min_length / max_length 0 = no limit. */
 casm_modal *casm_modal_new(const char *custom_id, const char *title);
+int casm_modal_select(casm_modal *m, const char *label, casm_select *s, int required);  /* any select, in a Label */
 int casm_modal_input(casm_modal *m, const char *custom_id, const char *label, int paragraph,
                      const char *placeholder, long min_length, long max_length, int required);
 

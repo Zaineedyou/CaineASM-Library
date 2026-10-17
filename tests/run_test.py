@@ -34,6 +34,7 @@ def run(mode, mock=None, timeout=180):
 # ------------------------------------------------------------ misc (no network)
 p = run('misc')
 check(p.returncode == 0, f'misc exit {p.returncode} {p.stderr[-300:]}')
+check('MISC version 0.3.0 0.3.0\n' in p.stdout, f'casm_version() matches CASM_VERSION_STRING: {p.stdout[:80]!r}')
 for k, v in [('init_null', '-1'), ('init_empty', '-1'), ('run_noinit', '-1'), ('botid', 'null')]:
     check(f'MISC {k} {v}' in p.stdout, f'misc {k} expected {v}: {p.stdout!r}')
 
@@ -93,7 +94,7 @@ check(p.returncode == 0 and 'RUN 0' in o, f'inter run: {o[-300:]!r} {e[-300:]}')
 ir = [d for k, d in m.log if k == 'rest']
 check(all(d['headers'].get('authorization') == 'Bot tok.en' for d in ir), 'interaction calls carry the bot Authorization header')
 ints = [l for l in o.split('\n') if l.startswith('INT ')]
-check(len(ints) == 14, f'14 parsed interactions ({len(ints)})')
+check(len(ints) == 17, f'17 parsed interactions ({len(ints)})')
 i1 = ints[0] if ints else ''
 for frag in ['id=3001', 'app=700', 'tok=tok_A-b.c1', 'guild=G1', 'chan=1001', 'uid=U1', 'uname=alice', 'cmd=ping',
              'cid=c1', 'custom=<null>', 'type=2 ctype=1 appid=700', '"name":"text","type":3,"value":"he said \\"hi\\" \u00e9\\n"']:
@@ -266,6 +267,31 @@ for k, v in [('f1', 200), ('f2', 200), ('f3', 200), ('f4', 200), ('fadd', 0), ('
              ('feditresp', 200), ('frespond', -1), ('fupdate', -1), ('fok', 0)] + [(f'fbad{x}', -1) for x in range(1, 15)]:
     check(f'RET {k} {v}\n' in o, f'RET {k} {v}')
 
+# ---- user / role / mentionable / channel selects
+check('USEL has=1 v0=s:U9 v1=s:U10 v2=0:' in o, 'entity select values read with casm_select_values / casm_array_at')
+for line in ['JG user s zed', 'JG nick s Zed \\"z\\"', 'JG missing 0 ', 'JG values a ', 'JG resolved o ', 'JG ctype d 5', 'JG token s tok_U',
+             'JG nul n null', 'JG bad 0 ', 'JG nullargs 0 0 0', 'JG nullout 115']:
+    check(line + '\n' in o, f'casm_json_get: {line!r}')
+for k, v in [('selok', '0'), ('selresp', '204'), ('msok', '0'), ('msshow', '204'), ('sb10', '-1'), ('sb11', '-1 -1'), ('sb12', '-1 -1'), ('sb9', '-1 -1 -1')]:
+    check(f'RET {k} {v}\n' in o, f'RET {k} {v}')
+for k in (1, 2, 3, 4, 5, 6, 7, 8):
+    check(f'RET sb{k} 1\n' in o, f'select rule violation sb{k} gives NULL')
+SELS = [{'type': 1, 'components': [c]} for c in [
+    {'type': 5, 'custom_id': 'u_sel', 'placeholder': 'Pick users', 'min_values': 1, 'max_values': 3},
+    {'type': 8, 'custom_id': 'c_sel', 'min_values': 0, 'max_values': 5, 'disabled': True, 'channel_types': [0, 2]},
+    {'type': 7, 'custom_id': 'm_sel'},
+    {'type': 6, 'custom_id': 'r_sel', 'placeholder': 'Roles'},
+    {'type': 3, 'custom_id': 's_sel', 'options': [{'label': 'A', 'value': 'a'}]}]]
+ui += [
+    ('POST', '/api/v10/interactions/3018/tok_U/callback', {'type': 4, 'data': {'components': SELS, 'allowed_mentions': AM}}),
+    ('POST', '/api/v10/interactions/3019/tok_U/callback', {'type': 9, 'data': {'custom_id': 'mod2', 'title': 'Pick', 'components': [
+        {'type': 18, 'label': 'Who', 'component': {'type': 5, 'custom_id': 'u2', 'min_values': 1, 'max_values': 2, 'required': True}},
+        {'type': 18, 'label': 'Where', 'component': {'type': 8, 'custom_id': 'c2', 'channel_types': [0], 'min_values': 0, 'required': False}}]}}),
+]
+for meth, path, bd in ui[-2:]:
+    got = [d for d in ir if d['method'] == meth and d['path'] == path and not d['headers'].get('content-type', '').startswith('multipart/') and (json.loads(d['body']) if d['body'] else None) == bd]
+    check(len(got) == 1, f'SEL {meth} {path} body {json.dumps(bd)[:90]}: matches {len(got)}')
+
 check(len(ir) == len(want) + len(ui) + 2 + len(cases), f'exactly {len(want) + len(ui) + 2 + len(cases)} interaction REST calls, invalid ones never reached the network (saw {len(ir)})')
 
 # ------------------------------------------------------------ per-route rate limiting
@@ -313,6 +339,11 @@ p = run('fatal', m, 60)
 check(p.returncode == 0, f'fatal exit {p.returncode} {p.stderr[-300:]}')
 check('RUN 1' in p.stdout, f'fatal run result: {p.stdout!r}')
 check('close code 4004' in p.stderr, 'fatal message logged on stderr')
+m = Mock('fatal', certdir)
+p = run('fatallog', m, 60)
+check(p.returncode == 0 and 'RUN 1' in p.stdout, f'fatallog run: {p.stdout!r}')
+check(any(l.startswith('LOG ') and 'close code 4004' in l for l in p.stdout.split('\n')), f'log callback receives the fatal line: {p.stdout!r}')
+check('close code' not in p.stderr, f'with a log callback nothing goes to stderr: {p.stderr!r}')
 check(m.conn_n == 1, f'no reconnect after 4004 (conns={m.conn_n})')
 
 # ------------------------------------------------------------ full session
@@ -337,6 +368,23 @@ if len(logins) == 3:
     check(r2['op'] == 6 and r2['d']['session_id'] == 'SESS1' and r2['d']['token'] == 'tok.en', f'resume payload {r2}')
     check(r2['d']['seq'] == seq, f'resume seq {r2["d"]["seq"]} == {seq}')
     check(i3['op'] == 2, 'identify again after invalid session (d=false)')
+# ---- typed gateway events
+RAWE = lambda tag: [l for l in out.split('\n') if l.startswith(tag + ' ') or l.startswith(tag + '\n') or l == tag]
+for want_line in [
+    'UPD id=2001 chan=1001 guild=G1 aid=U1 content=edited \\"x\\" \u00e9',
+    'UPD id=2002 chan=1001 guild=<null> aid=<null> content=<null>',
+    'DEL id=2003 chan=1001 guild=G1 raw=',
+    'DEL id=2004 chan=1002 guild=<null> raw=',
+    'REACT user=U1 chan=1001 msg=2001 guild=G1 emoji=\U0001F525 eid=<null> mauthor=U2 added=1 burst=0 raw=',
+    'REACT user=U3 chan=1002 msg=2002 guild=<null> emoji=party eid=555 mauthor=<null> added=1 burst=1 raw=',
+    'REACT user=U1 chan=1001 msg=2001 guild=G1 emoji=\U0001F525 eid=<null> mauthor=<null> added=0 burst=0 raw=',
+    'MEMBER guild=G1 user=U7 name=newbie nick=Nibb \\"n\\" joined=1 raw=',
+    'MEMBER guild=G1 user=U7 name=newbie nick=<null> joined=0 raw=',
+]:
+    check(any(l.startswith(want_line) for l in out.split('\n')), f'typed event line {want_line!r}')
+for tag, n in [('UPD', 2), ('DEL', 2), ('REACT', 3), ('MEMBER', 2)]:
+    check(len([l for l in out.split('\n') if l.startswith(tag + ' ')]) == n, f'{n} {tag} events (and nothing extra)')
+
 PA = {'since': None, 'activities': [{'name': 'Custom Status', 'type': 4, 'state': 'custom text \u00e9'}], 'status': 'idle', 'afk': False}
 PB = {'since': None, 'activities': [{'name': 'stream', 'type': 1, 'url': 'https://t.tv/x'}], 'status': 'online', 'afk': False}
 if len(logins) == 3:
@@ -386,7 +434,7 @@ def body(d):
 
 posts = [d for d in rest if d['method'] == 'POST' and d['path'] == '/api/v10/channels/1001/messages']
 check(len(rest) > 0 and all(d['headers'].get('authorization') == 'Bot tok.en' for d in rest), 'Authorization: Bot tok.en on every request')
-check(all(d['headers'].get('user-agent', '').startswith('DiscordBot (') for d in rest), 'User-Agent follows the DiscordBot format')
+check(all(d['headers'].get('user-agent', '') == 'DiscordBot (https://github.com/Zaineedyou/CaineASM-Library, 0.3.0)' for d in rest), 'default User-Agent: DiscordBot (url, version) with this library and its version')
 check(all(d['headers'].get('content-type', '').startswith('application/json') for d in rest), 'Content-Type json')
 
 pong = [d for d in posts if body(d)['content'].startswith('pong')]

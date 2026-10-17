@@ -291,6 +291,33 @@ static unsigned char *mkdata(size_t n) {
     return p;
 }
 
+static void on_update(const casm_message *m, void *u) {
+    (void)u;
+    printf("UPD"); pr("id", m->id); pr("chan", m->channel_id); pr("guild", m->guild_id); pr("aid", m->author_id); pr("content", m->content);
+    printf("\n"); fflush(stdout);
+}
+static void on_delete(const casm_message_delete *e, void *u) {
+    (void)u;
+    printf("DEL"); pr("id", e->id); pr("chan", e->channel_id); pr("guild", e->guild_id); printf(" raw=%zu\n", e->raw.len); fflush(stdout);
+}
+static void on_react(const casm_reaction *e, void *u) {
+    (void)u;
+    char nm[64] = "";
+    if (e->emoji_name.ptr) casm_unescape(e->emoji_name.ptr, e->emoji_name.len, nm, sizeof nm);
+    printf("REACT"); pr("user", e->user_id); pr("chan", e->channel_id); pr("msg", e->message_id); pr("guild", e->guild_id);
+    printf(" emoji=%s", nm); pr("eid", e->emoji_id); pr("mauthor", e->message_author_id);
+    printf(" added=%ld burst=%ld raw=%zu\n", e->added, e->burst, e->raw.len); fflush(stdout);
+}
+static void on_member(const casm_member_event *e, void *u) {
+    (void)u;
+    printf("MEMBER"); pr("guild", e->guild_id); pr("user", e->user_id); pr("name", e->user_name); pr("nick", e->nick);
+    printf(" joined=%ld raw=%zu\n", e->joined, e->raw.len); fflush(stdout);
+}
+static void on_log(const char *line, size_t len, void *u) {
+    (void)u;
+    printf("LOG %.*s\n", (int)len, line); fflush(stdout);
+}
+
 static void on_interaction(const casm_interaction *i, void *u) {
     (void)u;
     printf("INT");
@@ -351,6 +378,28 @@ static void on_interaction(const casm_interaction *i, void *u) {
         casm_reply_content(r, "updated", 7);
         printf("RET selupdate %ld\n", casm_update_reply(i, r));
         casm_builder_free(r);
+    } else if (starts_str(i->custom_id, "usel")) {
+        casm_str arr = {0, 0}, v = {0, 0};
+        int has = casm_select_values(i, &arr);
+        printf("USEL has=%d", has);
+        for (size_t k = 0; k < 3; k++) {
+            v.ptr = NULL; v.len = 0;
+            int t = casm_array_at(&arr, k, &v);
+            printf(" v%zu=%c:%.*s", k, t ? t : '0', (int)v.len, v.ptr ? v.ptr : "");
+        }
+        printf("\n");
+        struct { const char *name, *path; } jg[] = {
+            {"user", "data.resolved.users.U9.username"}, {"nick", "data.resolved.members.U9.nick"},
+            {"missing", "data.resolved.users.NOPE.username"}, {"values", "data.values"}, {"resolved", "data.resolved"},
+            {"ctype", "data.component_type"}, {"token", "token"}, {"nul", "data.resolved.users.U10.avatar"}, {"bad", "data..x"} };
+        for (size_t k = 0; k < sizeof jg / sizeof jg[0]; k++) {
+            v.ptr = NULL; v.len = 0;
+            int t = casm_json_get(&i->raw, jg[k].path, &v);
+            printf("JG %s %c %.*s\n", jg[k].name, t ? t : '0', t == 'o' || t == 'a' ? 0 : (int)v.len, v.ptr ? v.ptr : "");
+        }
+        casm_str none = {0, 0};
+        printf("JG nullargs %d %d %d\n", casm_json_get(NULL, "a", &v), casm_json_get(&none, "a", &v), casm_json_get(&i->raw, NULL, &v));
+        printf("JG nullout %d\n", casm_json_get(&i->raw, "token", NULL));
     } else if (i->type == 3) {
         const char *d = "{\"content\":\"updated \\\"x\\\"\"}";
         printf("RET update %ld\n", casm_interaction_response(i, 7, d, strlen(d)));
@@ -491,6 +540,44 @@ static void on_interaction(const casm_interaction *i, void *u) {
         printf("RET fbad13 %ld\n", casm_send_file("abc/../x", "a.txt", "x", 1, NULL, NULL));
         printf("RET fbad14 %ld\n", casm_send_file("1001", "a/b", "x", 1, NULL, NULL));
         free(d1); free(d2);
+    } else if (starts_str(i->command_name, "selects")) {
+        casm_reply *r = casm_reply_new();
+        casm_select *su = casm_select_new_entity(CASM_SELECT_USER, "u_sel", "Pick users", 1, 3);
+        casm_select *sc = casm_select_new_entity(CASM_SELECT_CHANNEL, "c_sel", NULL, 0, 5);
+        casm_select *sm = casm_select_new_entity(CASM_SELECT_MENTIONABLE, "m_sel", NULL, -1, 0);
+        casm_select *sr = casm_select_new_entity(CASM_SELECT_ROLE, "r_sel", "Roles", -1, 0);
+        casm_select *ss = casm_select_new("s_sel", NULL, -1, 0);
+        int rc = 0;
+        rc |= casm_select_channel_type(sc, 0); rc |= casm_select_channel_type(sc, 2); rc |= casm_select_disabled(sc);
+        rc |= casm_select_option(ss, "A", "a", NULL, 0);
+        casm_select *all[5] = { su, sc, sm, sr, ss };
+        for (int k = 0; k < 5; k++) { casm_row *row = casm_row_new(); rc |= casm_row_select(row, all[k]); rc |= casm_reply_row(r, row); casm_builder_free(row); }
+        printf("RET selok %d\n", rc);
+        printf("RET selresp %ld\n", casm_respond_reply(i, r));
+        char longph[200]; memset(longph, 'p', sizeof longph - 1); longph[sizeof longph - 1] = 0;
+        printf("RET sb1 %d\n", casm_select_new_entity(4, "x", NULL, -1, 0) == NULL);
+        printf("RET sb2 %d\n", casm_select_new_entity(9, "x", NULL, -1, 0) == NULL);
+        printf("RET sb3 %d\n", casm_select_new_entity(5, "", NULL, -1, 0) == NULL);
+        printf("RET sb4 %d\n", casm_select_new_entity(5, NULL, NULL, -1, 0) == NULL);
+        printf("RET sb5 %d\n", casm_select_new_entity(5, "x", longph, -1, 0) == NULL);
+        printf("RET sb6 %d\n", casm_select_new_entity(5, "x", NULL, 26, 0) == NULL);
+        printf("RET sb7 %d\n", casm_select_new_entity(5, "x", NULL, 3, 2) == NULL);
+        printf("RET sb8 %d\n", casm_select_new_entity(5, "x", NULL, 0, 26) == NULL);
+        printf("RET sb9 %d %d %d\n", casm_select_channel_type(su, 0), casm_select_channel_type(sc, -1), casm_select_channel_type(sc, 256));
+        printf("RET sb10 %d\n", casm_select_option(su, "A", "a", NULL, 0));
+        printf("RET sb11 %d %d\n", casm_select_channel_type(NULL, 0), casm_select_disabled(NULL));
+        { casm_modal *mm = casm_modal_new("m", "t");
+          printf("RET sb12 %d %d\n", casm_modal_select(NULL, "l", su, 1), casm_modal_select(mm, "l", NULL, 1)); casm_builder_free(mm); }
+        casm_builder_free(r); casm_builder_free(su); casm_builder_free(sc); casm_builder_free(sm); casm_builder_free(sr); casm_builder_free(ss);
+    } else if (starts_str(i->command_name, "selmodal")) {
+        casm_modal *m = casm_modal_new("mod2", "Pick");
+        casm_select *su = casm_select_new_entity(CASM_SELECT_USER, "u2", NULL, 1, 2);
+        casm_select *sc = casm_select_new_entity(CASM_SELECT_CHANNEL, "c2", NULL, 0, 0);
+        int rc = casm_select_channel_type(sc, 0);
+        rc |= casm_modal_select(m, "Who", su, 1); rc |= casm_modal_select(m, "Where", sc, 0);
+        printf("RET msok %d\n", rc);
+        printf("RET msshow %ld\n", casm_show_modal(i, m));
+        casm_builder_free(m); casm_builder_free(su); casm_builder_free(sc);
     } else if (starts_str(i->command_name, "done")) {
         if (inter_thr_started) pthread_join(inter_thr, NULL);
         casm_stop();
@@ -514,6 +601,7 @@ static void *thr(void *arg) {
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     if (argc >= 2 && strcmp(argv[1], "misc") == 0) {
+        printf("MISC version %s %s\n", casm_version(), CASM_VERSION_STRING);
         printf("MISC init_null %d\n", casm_init(NULL, 1));
         printf("MISC init_empty %d\n", casm_init("", 1));
         printf("MISC run_noinit %d\n", casm_run());
@@ -580,6 +668,11 @@ int main(int argc, char **argv) {
     casm_on_event(on_event, NULL);
     if (strcmp(argv[1], "inter") == 0) casm_on_interaction(on_interaction, NULL);
     else casm_on_message(on_message, NULL);
+    if (strcmp(argv[1], "main") == 0) {
+        casm_on_message_update(on_update, NULL); casm_on_message_delete(on_delete, NULL);
+        casm_on_reaction(on_react, NULL); casm_on_member(on_member, NULL);
+    }
+    if (strcmp(argv[1], "fatallog") == 0) casm_set_log_callback(on_log, NULL);
     if (strcmp(argv[1], "main") == 0) casm_set_presence("dnd", CASM_ACTIVITY_WATCHING, "uptime \"x\"", NULL);
     int r = casm_run();
     printf("RUN %d\n", r);

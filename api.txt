@@ -96,3 +96,14 @@ casm_register_cmds
 casm_register_guild_cmds
 casm_reply_file
 casm_send_file
+casm_on_message_update
+casm_on_message_delete
+casm_on_reaction
+casm_on_member
+casm_json_get
+casm_select_new_entity
+casm_select_channel_type
+casm_select_disabled
+casm_modal_select
+casm_set_log_callback
+casm_version

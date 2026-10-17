@@ -183,6 +183,25 @@ class Mock:
             d.update(extra)
         return {'op': 0, 't': 'MESSAGE_CREATE', 'd': d}
 
+    def _events(self):
+        user = {'id': 'U7', 'username': 'newbie'}
+        return [
+            {'op': 0, 't': 'MESSAGE_UPDATE', 'd': {'id': '2001', 'channel_id': '1001', 'guild_id': 'G1',
+                                                   'content': 'edited "x" \u00e9', 'author': {'id': 'U1', 'username': 'alice'}}},
+            {'op': 0, 't': 'MESSAGE_UPDATE', 'd': {'id': '2002', 'channel_id': '1001', 'embeds': [{'title': 't'}]}},
+            {'op': 0, 't': 'MESSAGE_DELETE', 'd': {'id': '2003', 'channel_id': '1001', 'guild_id': 'G1'}},
+            {'op': 0, 't': 'MESSAGE_DELETE', 'd': {'id': '2004', 'channel_id': '1002'}},
+            {'op': 0, 't': 'MESSAGE_REACTION_ADD', 'd': {'user_id': 'U1', 'channel_id': '1001', 'message_id': '2001', 'guild_id': 'G1',
+                'member': {'nick': 'n', 'roles': []}, 'emoji': {'id': None, 'name': '\U0001F525'}, 'message_author_id': 'U2',
+                'burst': False, 'type': 0}},
+            {'op': 0, 't': 'MESSAGE_REACTION_ADD', 'd': {'user_id': 'U3', 'channel_id': '1002', 'message_id': '2002',
+                'emoji': {'id': '555', 'name': 'party', 'animated': True}, 'burst': True, 'type': 1}},
+            {'op': 0, 't': 'MESSAGE_REACTION_REMOVE', 'd': {'user_id': 'U1', 'channel_id': '1001', 'message_id': '2001', 'guild_id': 'G1',
+                'emoji': {'id': None, 'name': '\U0001F525'}, 'burst': False, 'type': 0}},
+            {'op': 0, 't': 'GUILD_MEMBER_ADD', 'd': {'guild_id': 'G1', 'user': user, 'nick': 'Nibb "n"', 'roles': [], 'joined_at': '2026-10-17T00:00:00Z'}},
+            {'op': 0, 't': 'GUILD_MEMBER_REMOVE', 'd': {'guild_id': 'G1', 'user': user}},
+        ]
+
     def _inter(self, id, name=None, type=2, token='tok_A-b.c1', user_in='member', data=None, **kw):
         u = {'id': 'U1', 'username': 'alice'}
         d = {'id': id, 'application_id': '700', 'type': type, 'token': token, 'version': 1,
@@ -219,6 +238,11 @@ class Mock:
                 {'name': 'sub', 'type': 1, 'options': [{'name': 'q', 'type': 3, 'value': 'he', 'focused': True}]}]}),
             self._inter('3015', 'build', token='tok_U'),
             self._inter('3016', 'files', token='tok_U'),
+            self._inter('3017', type=3, token='tok_U', data={'custom_id': 'usel', 'component_type': 5, 'values': ['U9', 'U10'],
+                'resolved': {'users': {'U9': {'id': 'U9', 'username': 'zed'}, 'U10': {'id': 'U10', 'username': 'amy', 'avatar': None}},
+                             'members': {'U9': {'nick': 'Zed "z"'}}}}),
+            self._inter('3018', 'selects', token='tok_U'),
+            self._inter('3019', 'selmodal', token='tok_U'),
             self._inter('3007', 'done'),
         ]
 
@@ -299,6 +323,9 @@ class Mock:
             for m in msgs:
                 self._send(c, m)
                 time.sleep(1.0)
+            for e in self._events():
+                self._send(c, e)
+                time.sleep(0.3)
             self.ev('seq_before_reconnect', {'seq': self.seq})
             self._send(c, {'op': 7, 'd': None})
             time.sleep(2)

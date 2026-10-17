@@ -13,7 +13,7 @@ extern malloc, free, memcmp
 extern c_strlen, parse_u64
 extern sb_init, sb_free, sb_append, sb_appends, sb_putc, sb_append_u64, sb_append_json_esc
 extern json_get, json_path, json_arr_next, json_true
-extern do_call, valid_id, ix_send, build_path, mp_send, ix_reply_mp
+extern do_call, valid_id, ix_send, build_path, mp_send, ix_reply_mp, chk_len
 
 %define H_A 0
 %define H_B 24
@@ -516,24 +516,56 @@ section .text
 ; ---------------------------------------------------------------------
 ; string select menus (b = header members, a = options)
 ; ---------------------------------------------------------------------
-; select *casm_select_new(const char *custom_id, const char *placeholder /*or NULL*/,
-;                         long min_values /*<0 = default*/, long max_values /*<=0 = default*/)
-global casm_select_new
-casm_select_new:
-    ENTER 0
-    mov r12, rdi
-    mov r13, rsi
-    mov r14, rdx
-    mov r15, rcx
+; select *sel_new(long type /*3 string, 5..8 entity*/, const char *custom_id, const char *placeholder /*or NULL*/,
+;                  long min_values /*<0 = default*/, long max_values /*<=0 = default*/)
+; custom_id 1-100 chars, placeholder up to 150, min 0-25, max 1-25 (Discord docs, Components reference)
+sel_new:
+    ENTER 16                         ; [0] type
+    mov [rsp], rdi
+    mov r12, rsi
+    mov r13, rdx
+    mov r14, rcx
+    mov r15, r8
     test r12, r12
     jz .null
+    mov rdi, r12
+    mov esi, 1
+    mov edx, 100
+    call chk_len
+    test eax, eax
+    jz .null
+    test r13, r13
+    jz .phok
+    mov rdi, r13
+    xor esi, esi
+    mov edx, 150
+    call chk_len
+    test eax, eax
+    jz .null
+.phok:
+    cmp r14, 25
+    jg .null
+    cmp r15, 25
+    jg .null
+    test r14, r14
+    js .rng
+    test r15, r15
+    jle .rng
+    cmp r14, r15
+    jg .null
+.rng:
     call bnew
     test rax, rax
     jz .null
     mov rbx, rax
+    mov rax, [rsp]
+    cmp rax, 3
+    je .typed
+    mov [rbx + 78], al               ; entity select: select_json writes channel_types instead of options
+.typed:
     lea rdi, [rbx + H_B]
     lea rsi, [rel k_type]
-    mov edx, 3
+    mov rdx, [rsp]
     call jn
     lea rdi, [rbx + H_B]
     lea rsi, [rel k_custom]
@@ -565,6 +597,72 @@ casm_select_new:
 .null:
     xor eax, eax
     LEAVE_RET
+
+; select *casm_select_new(const char *custom_id, const char *placeholder /*or NULL*/,
+;                         long min_values /*<0 = default*/, long max_values /*<=0 = default*/)
+global casm_select_new
+casm_select_new:
+    mov r8, rcx
+    mov rcx, rdx
+    mov rdx, rsi
+    mov rsi, rdi
+    mov edi, 3
+    jmp sel_new
+
+; select *casm_select_new_entity(int type, custom_id, placeholder, min_values, max_values)
+; type 5 user, 6 role, 7 mentionable, 8 channel select. Add it to a row with casm_row_select
+; (or to a modal with casm_modal_select); the chosen ids arrive in data.values.
+global casm_select_new_entity
+casm_select_new_entity:
+    movsxd rdi, edi
+    cmp rdi, 5
+    jl .null
+    cmp rdi, 8
+    jg .null
+    jmp sel_new
+.null:
+    xor eax, eax
+    ret
+
+; int casm_select_channel_type(select *s, int channel_type)   channel select: limit the channel types shown
+global casm_select_channel_type
+casm_select_channel_type:
+    ENTER 0
+    mov rbx, rdi
+    movsxd r12, esi
+    test rbx, rbx
+    jz .bad
+    cmp byte [rbx + 78], 8
+    jne .bad
+    cmp r12, 0
+    jl .bad
+    cmp r12, 255
+    jg .bad
+    lea rdi, [rbx + H_A]
+    call j_sep
+    lea rdi, [rbx + H_A]
+    mov rsi, r12
+    call sb_append_u64
+    xor eax, eax
+    LEAVE_RET
+.bad:
+    mov rax, -1
+    LEAVE_RET
+
+; int casm_select_disabled(select *s)   greyed out (messages only; Discord rejects it inside a modal)
+global casm_select_disabled
+casm_select_disabled:
+    ENTER 0
+    test rdi, rdi
+    jz .bad
+    add rdi, H_B
+    lea rsi, [rel j_dis]
+    call sb_appends
+    xor eax, eax
+    LEAVE_RET
+.bad:
+    mov rax, -1
+    LEAVE_RET
 section .rodata
 k_placeholder: db "placeholder", 0
 section .text
@@ -585,6 +683,8 @@ casm_select_option:
     jz .bad
     test r13, r13
     jz .bad
+    cmp byte [rbx + 78], 0           ; entity selects have no options
+    jne .bad
     lea rdi, [rbx + H_A]
     call j_sep
     lea rdi, [rbx + H_A]
@@ -635,6 +735,8 @@ select_json:
     mov rsi, [rbx + H_B + SB_DATA]
     mov rdx, [rbx + H_B + SB_LEN]
     call sb_append
+    cmp byte [rbx + 78], 0
+    jne .entity
     mov rdi, r12
     lea rsi, [rel j_opts]
     call sb_appends
@@ -646,6 +748,28 @@ select_json:
     lea rsi, [rel j_close_arr]
     call sb_appends
     LEAVE_RET
+.entity:
+    cmp qword [rbx + H_A + SB_LEN], 0
+    je .eclose
+    mov rdi, r12
+    lea rsi, [rel j_chtypes]
+    call sb_appends
+    mov rdi, r12
+    mov rsi, [rbx + H_A + SB_DATA]
+    mov rdx, [rbx + H_A + SB_LEN]
+    call sb_append
+    mov rdi, r12
+    mov esi, ']'
+    call sb_putc
+.eclose:
+    mov rdi, r12
+    lea rsi, [rel c_cb]
+    call sb_appends
+    LEAVE_RET
+section .rodata
+j_chtypes:   db ',"channel_types":[', 0
+j_comp2:     db ',"component":', 0
+section .text
 
 ; ---------------------------------------------------------------------
 ; modals (b = header, a = labelled inputs)
@@ -792,6 +916,61 @@ modal_json:
     mov rdi, r12
     lea rsi, [rel j_close_arr]
     call sb_appends
+    LEAVE_RET
+
+; int casm_modal_select(modal *m, const char *label, select *s, int required)
+; a select (string / user / role / mentionable / channel) wrapped in a Label, as the docs require for modals.
+; required = 0 allows an empty choice (then give the select min_values 0). The answer is read with
+; casm_modal_value (type 'a') and the ids are in data.values.
+global casm_modal_select
+casm_modal_select:
+    ENTER 32                         ; [0] select json
+    mov rbx, rdi
+    mov r12, rsi
+    mov r13, rdx
+    mov r14, rcx
+    test rbx, rbx
+    jz .bad
+    test r12, r12
+    jz .bad
+    test r13, r13
+    jz .bad
+    lea rdi, [rsp]
+    call sb_init
+    mov rdi, r13
+    lea rsi, [rsp]
+    call select_json
+    dec qword [rsp + SB_LEN]         ; drop the closing brace, "required" goes in before it
+    lea rdi, [rbx + H_A]
+    call j_sep
+    lea rdi, [rbx + H_A]
+    lea rsi, [rel j_label]
+    call sb_appends
+    lea rdi, [rbx + H_A]
+    mov rsi, r12
+    call j_esc
+    lea rdi, [rbx + H_A]
+    lea rsi, [rel j_comp2]
+    call sb_appends
+    lea rdi, [rbx + H_A]
+    mov rsi, [rsp + SB_DATA]
+    mov rdx, [rsp + SB_LEN]
+    call sb_append
+    lea rdi, [rbx + H_A]
+    lea rsi, [rel j_req]
+    call sb_appends
+    lea rdi, [rbx + H_A]
+    mov rsi, r14
+    call jbool
+    lea rdi, [rbx + H_A]
+    lea rsi, [rel j_close2]
+    call sb_appends
+    lea rdi, [rsp]
+    call sb_free
+    xor eax, eax
+    LEAVE_RET
+.bad:
+    mov rax, -1
     LEAVE_RET
 
 ; ---------------------------------------------------------------------

@@ -12,14 +12,15 @@ extern g_ca_file
 section .rodata
 s_default_api: db "https://discord.com/api/v10", 0
 s_default_gw:  db "wss://gateway.discord.gg/?v=10&encoding=json", 0
-s_default_ua:  db "DiscordBot (https://github.com/Zaineedyou/CaineASM-Lite, 0.1.0)", 0
+s_default_ua:  db "DiscordBot (https://github.com/Zaineedyou/CaineASM-Library, 0.3.0)", 0
+s_version:     db "0.3.0", 0
 
 section .bss
 alignb 8
 global g_discord_token, g_gateway_url, g_api_base, g_user_agent
 global g_bot_id, g_stop, g_intents, g_quiet
 global g_cb_event, g_cb_event_user, g_cb_msg, g_cb_msg_user
-global g_app_id, g_cb_inter, g_cb_inter_user
+global g_app_id, g_cb_inter, g_cb_inter_user, g_cb_log, g_cb_log_user
 g_discord_token: resq 1
 g_gateway_url:   resq 1
 g_api_base:      resq 1
@@ -35,6 +36,8 @@ g_cb_msg_user:   resq 1
 g_cb_inter:      resq 1
 g_cb_inter_user: resq 1
 g_app_id:        resb 32
+g_cb_log:        resq 1
+g_cb_log_user:   resq 1
 
 section .text
 
@@ -45,9 +48,19 @@ section .text
 global log_line
 log_line:
     ENTER 32
+    mov r12, rdi
+    cmp qword [rel g_cb_log], 0
+    je .stderr
+    call c_strlen                   ; a log callback gets every line, quiet or not
+    mov rdi, r12
+    mov rsi, rax
+    mov rdx, [rel g_cb_log_user]
+    call [rel g_cb_log]
+    jmp .d
+.stderr:
     cmp qword [rel g_quiet], 0
     jne .d
-    mov r12, rdi
+    mov rdi, r12
     call c_strlen
     mov r13, rax
     lea rbx, [rsp]
@@ -74,6 +87,14 @@ global log_sb
 log_sb:
     ENTER 0
     mov rbx, rdi
+    cmp qword [rel g_cb_log], 0
+    je .stderr
+    mov rdi, [rbx + SB_DATA]
+    mov rsi, [rbx + SB_LEN]
+    mov rdx, [rel g_cb_log_user]
+    call [rel g_cb_log]
+    jmp .free
+.stderr:
     cmp qword [rel g_quiet], 0
     jne .free
     mov rdi, rbx
@@ -191,6 +212,20 @@ global casm_set_quiet
 casm_set_quiet:
     movsxd rax, edi
     mov [rel g_quiet], rax
+    ret
+
+; void casm_set_log_callback(void (*cb)(const char *line, size_t len, void *user), void *user)
+; the library's log lines (no trailing newline) go to cb instead of stderr; NULL = back to stderr
+global casm_set_log_callback
+casm_set_log_callback:
+    mov [rel g_cb_log], rdi
+    mov [rel g_cb_log_user], rsi
+    ret
+
+; const char *casm_version(void)
+global casm_version
+casm_version:
+    lea rax, [rel s_version]
     ret
 
 global casm_on_event

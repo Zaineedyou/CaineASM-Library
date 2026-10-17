@@ -11,6 +11,8 @@ extern json_get, json_path, json_true
 extern ws_connect, ws_close, ws_poll_message, ws_send_text, ws_send_close, ws_msg, ws_close_code
 extern g_cb_event, g_cb_event_user, g_cb_msg, g_cb_msg_user, g_intents
 extern g_app_id, g_cb_inter, g_cb_inter_user
+extern g_cb_msgupd, g_cb_msgupd_user, g_cb_msgdel, g_cb_react, g_cb_member
+extern emit_msgdel, emit_react_add, emit_react_remove, emit_member_add, emit_member_remove
 extern pres_append_identify, pres_tick
 extern now_ms, sleep_ms, ieq, parse_u64, c_strlen, log_line, log_sb
 extern g_discord_token, g_gateway_url, g_bot_id, g_stop
@@ -69,6 +71,12 @@ e_inter:     db "INTERACTION_CREATE", 0
 e_ready:     db "READY", 0
 e_resumed:   db "RESUMED", 0
 e_msg:       db "MESSAGE_CREATE", 0
+e_msgupd:    db "MESSAGE_UPDATE", 0
+e_msgdel:    db "MESSAGE_DELETE", 0
+e_radd:      db "MESSAGE_REACTION_ADD", 0
+e_rrem:      db "MESSAGE_REACTION_REMOVE", 0
+e_madd:      db "GUILD_MEMBER_ADD", 0
+e_mrem:      db "GUILD_MEMBER_REMOVE", 0
 l_online:    db "✅ Bot online: ", 0
 l_resumed:   db "✅ Gateway session resumed", 0
 l_connfail:  db "⚠️ Failed to connect to the Discord gateway, retrying...", 0
@@ -247,6 +255,7 @@ rand_below:
 ; ---------------------------------------------------------------------
 ; void fill_slice(casm_str *dst, const char *obj, size_t len, const char *path,
 ;                 long want_type, jv *tmp)   NULL/0 when missing or another type
+global fill_slice, fill_bool
 fill_slice:
     ENTER 0
     mov r12, rdi
@@ -321,6 +330,8 @@ emit_message:
     ENTER 224
     mov r12, rdi
     mov r13, rsi
+    mov r14, rdx                    ; callback
+    mov r15, rcx                    ; its user pointer
     FILL M_ID,      m_id,      's'
     FILL M_CHAN,    m_chan,    's'
     FILL M_GUILD,   m_guild,   's'
@@ -346,8 +357,8 @@ emit_message:
     lea r8, [rsp + M_TMP]
     call fill_bool
     lea rdi, [rsp]
-    mov rsi, [rel g_cb_msg_user]
-    call [rel g_cb_msg]
+    mov rsi, r15
+    call r14
     LEAVE_RET
 
 ; void fill_num(long *dst, const char *obj, size_t len, const char *path, jv *tmp)  0 when missing
@@ -442,6 +453,23 @@ emit_interaction:
     call [rel g_cb_inter]
     LEAVE_RET
 
+; ROUTE event_name, callback_global, emitter(d, len): runs the emitter when the callback is set and t matches
+%macro ROUTE 3
+    cmp qword [rel %2], 0
+    je %%skip
+    mov rdi, r12
+    mov rsi, r13
+    lea rdx, [rel %1]
+    call ieq
+    test eax, eax
+    jz %%skip
+    mov rdi, r14
+    mov rsi, r15
+    call %3
+    jmp .done
+%%skip:
+%endmacro
+
 ; void emit_dispatch(const char *t, size_t tlen, const char *d, size_t dlen)
 ; event callback first (every dispatch), then the parsed MESSAGE_CREATE callback
 emit_dispatch:
@@ -460,32 +488,25 @@ emit_dispatch:
     mov r8, [rel g_cb_event_user]
     call rax
 .nev:
-    cmp qword [rel g_cb_msg], 0
-    je .noMsg
-    mov rdi, r12
-    mov rsi, r13
-    lea rdx, [rel e_msg]
-    call ieq
-    test eax, eax
-    jz .noMsg
-    mov rdi, r14
-    mov rsi, r15
-    call emit_message
-    jmp .done
-.noMsg:
-    cmp qword [rel g_cb_inter], 0
-    je .done
-    mov rdi, r12
-    mov rsi, r13
-    lea rdx, [rel e_inter]
-    call ieq
-    test eax, eax
-    jz .done
-    mov rdi, r14
-    mov rsi, r15
-    call emit_interaction
+    ROUTE e_msg,     g_cb_msg,    emit_message_create
+    ROUTE e_inter,   g_cb_inter,  emit_interaction
+    ROUTE e_msgupd,  g_cb_msgupd, emit_message_update
+    ROUTE e_msgdel,  g_cb_msgdel, emit_msgdel
+    ROUTE e_radd,    g_cb_react,  emit_react_add
+    ROUTE e_rrem,    g_cb_react,  emit_react_remove
+    ROUTE e_madd,    g_cb_member, emit_member_add
+    ROUTE e_mrem,    g_cb_member, emit_member_remove
 .done:
     LEAVE_RET
+
+emit_message_create:
+    mov rdx, [rel g_cb_msg]
+    mov rcx, [rel g_cb_msg_user]
+    jmp emit_message
+emit_message_update:
+    mov rdx, [rel g_cb_msgupd]
+    mov rcx, [rel g_cb_msgupd_user]
+    jmp emit_message
 
 ; ---------------------------------------------------------------------
 ; int gw_dispatch(void)   handles ws_msg

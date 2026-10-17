@@ -77,6 +77,7 @@ ulen:
 .d:
     ret
 
+global chk_len
 ; int chk_len(const char *s, long min, long max)   1 when min <= chars <= max (NULL = 0)
 chk_len:
     test rdi, rdi
