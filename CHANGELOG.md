@@ -14,7 +14,7 @@ All notable changes to CaineASM-Library. Versions follow `MAJOR.MINOR.PATCH`; `c
 - `casm_version()` and `CASM_VERSION_MAJOR/MINOR/PATCH/STRING` in `caineasm.h`.
 - `CASM_INTENT_DIRECT_MESSAGE_REACTIONS`.
 - New examples in `examples/slash_bot.c`: commands registered through the builder and a `/file` command.
-- 373 automated checks (up from 326), all passing, also under valgrind.
+- 386 automated checks (up from 326), all passing, also under valgrind. Includes flood tests: 20,000 back-to-back messages and a slow-callback run.
 
 ### Changed
 - The default User-Agent is now `DiscordBot (https://github.com/Zaineedyou/CaineASM-Library, 0.3.0)`.

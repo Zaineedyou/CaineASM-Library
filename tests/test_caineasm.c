@@ -16,6 +16,8 @@
 #include <time.h>
 #include <limits.h>
 #include <math.h>
+#include <unistd.h>
+#include <sys/resource.h>
 #include "caineasm.h"
 
 static void pr(const char *k, casm_str s) {
@@ -598,6 +600,32 @@ static void *thr(void *arg) {
     return NULL;
 }
 
+static long proc_kb(const char *key) {                 /* VmRSS / VmHWM of this process (ru_maxrss can be inherited across exec) */
+    FILE *f = fopen("/proc/self/status", "r");
+    char line[128]; long v = -1; size_t kl = strlen(key);
+    while (f && fgets(line, sizeof line, f)) if (strncmp(line, key, kl) == 0) { v = atol(line + kl); break; }
+    if (f) fclose(f);
+    return v;
+}
+
+/* ---- flood: N MESSAGE_CREATE events back to back; checks order and counts, prints timing and CPU ---- */
+static long fl_n, fl_bad, fl_delay_us;
+static struct timespec fl_t0, fl_t1;
+static void flood_msg(const casm_message *m, void *user) {
+    (void)user;
+    if (fl_n == 0) clock_gettime(CLOCK_MONOTONIC, &fl_t0);
+    if (m->content.len == 5 && memcmp(m->content.ptr, "!done", 5) == 0) {
+        clock_gettime(CLOCK_MONOTONIC, &fl_t1);
+        casm_stop();
+        return;
+    }
+    char b[32]; int n = snprintf(b, sizeof b, "m%ld", fl_n);
+    if (m->content.len != (size_t)n || memcmp(m->content.ptr, b, (size_t)n) != 0) fl_bad++;
+    if (!m->id.len || !m->channel_id.len || !m->author_id.len || !m->guild_id.len) fl_bad++;
+    fl_n++;
+    if (fl_delay_us) usleep((useconds_t)fl_delay_us);
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     if (argc >= 2 && strcmp(argv[1], "misc") == 0) {
@@ -663,6 +691,21 @@ int main(int argc, char **argv) {
         }
         casm_cleanup();
         printf("REUSE ok=%d bad=%d\n", ok, bad);
+        return 0;
+    }
+    if (strncmp(argv[1], "flood", 5) == 0) {
+        if (strcmp(argv[1], "floodslow") == 0) fl_delay_us = 2000;      /* a slow callback: 2 ms per message */
+        casm_set_quiet(1);
+        casm_on_message(flood_msg, NULL);
+        struct rusage ra, rb;
+        long rss0 = proc_kb("VmRSS:");
+        getrusage(RUSAGE_SELF, &ra);
+        int r = casm_run();
+        getrusage(RUSAGE_SELF, &rb);
+        long cpu_us = (rb.ru_utime.tv_sec - ra.ru_utime.tv_sec + rb.ru_stime.tv_sec - ra.ru_stime.tv_sec) * 1000000L
+                    + (rb.ru_utime.tv_usec - ra.ru_utime.tv_usec) + (rb.ru_stime.tv_usec - ra.ru_stime.tv_usec);
+        long wall_us = (fl_t1.tv_sec - fl_t0.tv_sec) * 1000000L + (fl_t1.tv_nsec - fl_t0.tv_nsec) / 1000;
+        printf("FLOOD run=%d n=%ld bad=%ld wall_us=%ld cpu_us=%ld rss0_kb=%ld hwm_kb=%ld\n", r, fl_n, fl_bad, wall_us, cpu_us, rss0, proc_kb("VmHWM:"));
         return 0;
     }
     casm_on_event(on_event, NULL);

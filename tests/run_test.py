@@ -308,6 +308,30 @@ check(2600 <= total <= 5000, f'4 more sends on the exhausted channel waited for 
 check(mm is not None and mm.group(1) == '200' and 500 <= int(mm.group(2)) <= 2500, f'global 429 retried after retry_after: {mm and mm.groups()}')
 check(sum(1 for k, d in m.log if k == 'rest' and 'GLOBAL' in d['body']) == 2, 'the global 429 request was sent exactly twice')
 
+
+# ------------------------------------------------------------ flood: many events back to back
+vgf = bool(os.environ.get('VALGRIND'))
+for mode, n in (('flood', 20000 if not vgf else 2000), ('floodslow', 500 if not vgf else 150)):
+    os.environ['FLOOD_N'] = str(n)
+    m = Mock(mode, certdir)
+    p = run(mode, m, 300)
+    mm = re.search(r'FLOOD run=(-?\d+) n=(\d+) bad=(\d+) wall_us=(-?\d+) cpu_us=(\d+) rss0_kb=(\d+) hwm_kb=(\d+)', p.stdout)
+    check(mm is not None, f'{mode}: result line: {p.stdout[-200:]!r} {p.stderr[-200:]!r}')
+    if mm:
+        run_rc, got, bad, wall, cpu, rss0, rss = (int(x) for x in mm.groups())
+        per = wall / max(got, 1)
+        print(f'  {mode}: {got} events in {wall / 1000:.0f} ms wall = {per:.1f} us/event ({1e6 / per:.0f}/s), cpu {cpu / 1000:.0f} ms, memory {rss0} KB before, peak {rss} KB')
+        check(run_rc == 0, f'{mode}: casm_run returned {run_rc}')
+        check(got == n, f'{mode}: all {n} messages delivered, got {got}')
+        check(bad == 0, f'{mode}: every message in order with intact fields ({bad} bad)')
+        check(sum(1 for k, d in m.log if k == 'ws_open') == 1, f'{mode}: no reconnect during the flood')
+        if mode == 'flood' and not vgf:
+            check(per < 200, f'{mode}: under 200 us per event ({per:.1f})')
+            check(rss - rss0 < 20000, f'{mode}: 20000 events add under 20 MB at peak ({rss - rss0} KB)')
+        if mode == 'floodslow':
+            check(wall >= n * 2000 * 0.9, f'{mode}: callbacks ran one after another ({wall} us)')
+del os.environ['FLOOD_N']
+
 # ------------------------------------------------------------ REST from many threads
 m = Mock('main', certdir)
 p = run('threads', m, 120)

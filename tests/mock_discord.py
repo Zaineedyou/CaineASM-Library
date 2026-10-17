@@ -269,7 +269,7 @@ class Mock:
                         elif j['op'] == 3:
                             self.ev('presence', {'n': n, 'd': j['d'], 'ts': time.time()})
                         elif j['op'] == 1:
-                            self.ev('heartbeat', {'n': n, 'd': j['d']})
+                            self.ev('heartbeat', {'n': n, 'd': j['d'], 'ts': time.time()})
                             c.sendall(frame(1, b'{"op":11}'))
                     elif op == 8:
                         self.ev('client_close', {'n': n})
@@ -301,6 +301,35 @@ class Mock:
                 self._send(c, it)
                 time.sleep(1.0)
             time.sleep(1.0)
+            self.finished.set()
+            return
+
+        if self.mode.startswith('flood'):
+            # N MESSAGE_CREATE events as fast as the socket takes them, then '!done'
+            ready('SESS1')
+            time.sleep(0.5)
+            nmsg = int(os.environ.get('FLOOD_N', '20000'))
+            t0 = time.time()
+            batch = []
+            for i in range(nmsg):
+                m = self._msg(str(5000000 + i), 'm%d' % i, uid='U%d' % (i % 500), uname='user%d' % (i % 500), nick='Nick %d' % (i % 500),
+                              extra={'mentions': [{'id': '900', 'username': 'MockBot'}], 'timestamp': '2026-10-17T12:00:00.000000+00:00',
+                                     'member': {'nick': 'Nick', 'roles': ['1', '2', '3']}, 'tts': False, 'pinned': False, 'embeds': []})
+                self.seq += 1
+                m['s'] = self.seq
+                batch.append(frame(1, json.dumps(m, separators=(',', ':')).encode()))
+                if len(batch) == 200:
+                    c.sendall(b''.join(batch))
+                    batch = []
+            if batch:
+                c.sendall(b''.join(batch))
+            self._send(c, self._msg('5999999', '!done'))
+            self.ev('flood_sent', {'n': nmsg, 'send_s': time.time() - t0})
+            for _ in range(600):
+                if any(k == 'client_close' for k, d in self.log):
+                    break
+                time.sleep(0.1)
+            time.sleep(0.3)
             self.finished.set()
             return
 

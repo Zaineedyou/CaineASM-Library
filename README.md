@@ -32,7 +32,7 @@ Requires `nasm`, `gcc`, `ld`, `objcopy`, `ar`, `libcurl4-openssl-dev`. The crash
 
 ```
 make            # build/libcaineasm.a
-make test       # end-to-end tests against a local mock Discord (373 checks)
+make test       # end-to-end tests against a local mock Discord (386 checks)
 make valgrind   # the same tests under valgrind
 make example    # build/ping_bot and build/slash_bot
 ```
@@ -68,7 +68,7 @@ Full examples: `examples/ping_bot.c` (prefix command) and `examples/slash_bot.c`
 ### Important rules
 - Text from Discord arrives as **slices (ptr + len) into an internal buffer**, still **JSON-escaped** (`\"`, `\n`, `\uXXXX`), and valid only while the callback runs. Copy it if you need to keep it (or use `casm_interaction_keep`).
 - Text you send with `casm_send*` is plain UTF-8; the library escapes it.
-- Callbacks run on the gateway thread. Slow work (for example calling an AI API) belongs on your own thread. REST functions are safe to call from any thread (a mutex-protected pool of curl handles).
+- Callbacks run on the gateway thread, one event at a time. While a callback runs, no heartbeat is sent and no event is read. If the backlog takes longer than the heartbeat interval (about 41 s on real Discord) the pending heartbeat ACK is not read in time and the library reconnects and resumes, as the docs require for a zombied connection. Slow work (for example calling an AI API) belongs on your own thread. REST functions are safe to call from any thread (a mutex-protected pool of curl handles).
 - Mentions in sent messages are limited to users (`allowed_mentions.parse = ["users"]`), so the bot cannot ping `@everyone` or roles.
 
 ### Events
@@ -208,7 +208,7 @@ REST functions return the HTTP status (2xx = success), `0` if the transfer faile
 - The REST pool holds at most 8 handles; connections closed by the server are reopened automatically.
 - The rate limiter is keyed by route, not by Discord's bucket hash, and the table has 64 slots (oldest entries are reused).
 - x86-64 Linux only (ELF64, SysV ABI).
-- The 373 automated checks run against a local mock Discord (gateway + REST over TLS). Live testing on real Discord is described under "Tested on real Discord" below. The v0.3 additions (command builder, file upload, typed events, entity selects) have only been tested against the mock so far.
+- The 386 automated checks run against a local mock Discord (gateway + REST over TLS). Live testing on real Discord is described under "Tested on real Discord" below. The v0.3 additions (command builder, file upload, typed events, entity selects) have only been tested against the mock so far.
 
 ## Testing
 
@@ -219,7 +219,7 @@ Tested live against real Discord, deployed as a bot on Railway:
 - **Crash reporter**: a deliberate crash on Railway printed the signal, fault address and backtrace, and `addr2line` resolved the function names and source lines (`ix_path at src/interact.asm:124`, and so on).
 
 ### Automated tests
-`tests/run_test.py` runs `tests/test_caineasm.c` against `tests/mock_discord.py` (373 checks, also under valgrind with no errors and no definite leaks):
+`tests/run_test.py` runs `tests/test_caineasm.c` against `tests/mock_discord.py` (386 checks, also under valgrind with no errors and no definite leaks):
 - Gateway: identify, heartbeat, resume with the right sequence, invalid session then re-identify, fatal close code 4004, parsing of every message field (guild, DM, reply, bot, attachment, mention).
 - REST: every function (body, headers, method), long-message splitting, 429 retry, argument validation, 80 parallel sends from 8 threads, connection reuse (including when the server drops the connection).
 - Rate limiting: a Discord-style bucket mock (2 requests / 1.5 s per channel) must never see a request on an empty bucket; separate channels don't wait on each other; a global 429 is retried after `retry_after`.
@@ -227,4 +227,5 @@ Tested live against real Discord, deployed as a bot on Railway:
 - Command builder: the registered JSON for slash commands, options, choices, ranges, autocomplete, groups, context menus and flags is compared with the documented shapes, and dozens of rule violations must return `NULL` / `-1` without reaching the network.
 - File uploads: every multipart request is parsed and compared byte for byte (framing, `payload_json`, `files[n]` headers and data, including binary data that looks like multipart markers and a 1 MB file), each with its own boundary; invalid filenames, content types and over-limit uploads are rejected.
 - `casm_unescape`: test vectors plus a 5000-case fuzz against `json.dumps`, including UTF-8 truncation.
+- Flood: 20,000 `MESSAGE_CREATE` events sent back to back must all arrive in order with intact fields, with no reconnect (measured on a dev machine: about 9-11 us per event, over 90,000 events/s, +2 MB memory). A second run with a 2 ms-per-message callback checks that a slow callback still receives everything in order.
 - Message helpers, the crash handler (the signal still kills the process, fault address and backtrace are printed, stack overflow included), and the whole slash-command flow: parsing, respond/defer/followup/edit/delete, options and subcommands, command registration, `casm_interaction_keep`, and every builder compared field by field with the expected JSON, plus the modal / select / autocomplete readers.
